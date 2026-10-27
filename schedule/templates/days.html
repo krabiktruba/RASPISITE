@@ -1,0 +1,240 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="schedule-page">
+
+    <header class="schedule-header">
+        <h1>{{ group.group_name }}</h1>
+
+        <span>
+            {{ group.group_course }}
+            ·
+            {{ group.shift }}
+        </span>
+
+        {% if user.is_staff %}
+            {% if edit_mode %}
+                <a class="date-nav-link edit-link"
+                   href="?date={{ selected_date_iso }}">
+                    Готово
+                </a>
+            {% else %}
+                <a class="date-nav-link edit-link"
+                   href="?date={{ selected_date_iso }}&amp;edit=1">
+                    Правки на даты
+                </a>
+            {% endif %}
+
+            <a class="date-nav-link"
+               href="{% url 'group_edit' group_id=group.group_id %}">
+                Редактировать
+            </a>
+        {% endif %}
+
+        <nav class="date-nav" aria-label="Недели">
+            <a class="date-nav-link"
+               href="?date={{ prev_week_iso }}{{ edit_suffix }}">
+                ← Неделя
+            </a>
+            <span class="date-nav-label">{{ week_label }}</span>
+            <a class="date-nav-link"
+               href="{% url 'group_schedule' group_id=group.group_id %}{{ edit_first }}">
+                Сегодня
+            </a>
+            <a class="date-nav-link"
+               href="?date={{ next_week_iso }}{{ edit_suffix }}">
+                Неделя →
+            </a>
+        </nav>
+    </header>
+
+    {% if edit_mode %}
+        <p class="change-hint">
+            Режим правок. Кнопки справа от пары меняют расписание только на
+            выбранную дату, основное расписание остаётся прежним:
+            <b>⇄</b> перенос, <b>✕</b> отмена, <b>↻</b> замена,
+            <b>↩</b> сброс (вернуть как было).
+        </p>
+    {% endif %}
+
+    <section class="days-grid{% if edit_mode %} is-editing{% endif %}">
+
+        {% for day in schedule_days %}
+
+            <article class="day-card{% if day.is_today %} is-today{% endif %}">
+
+                <header class="day-title teacher-day-title">
+                    <span>{{ day.name }}</span>
+                    <span class="day-date">{{ day.label }}</span>
+                </header>
+
+                {% if day.off_reason %}
+                    <p class="day-off">{{ day.off_reason }}</p>
+                {% else %}
+                    <div class="pairs">
+
+                        {% for pair in day.pairs %}
+
+                            {% with lesson=pair.lesson %}
+                            <div class="pair{% if lesson.status %} is-{{ lesson.status }}{% endif %}{% if edit_mode %} has-actions{% endif %}">
+
+                                <div class="pair-number">
+                                    {{ pair.number }}
+                                </div>
+
+                                <div class="pair-time">
+                                    {% if pair.time %}
+                                        {{ pair.time.pair_start_time|time:"H:i" }}
+                                        -
+                                        {{ pair.time.pair_end_time|time:"H:i" }}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </div>
+
+                                <div class="pair-name">
+                                    {% if lesson %}
+                                        {{ lesson.subject }}
+                                        {% if lesson.status_label %}
+                                            <span class="status-badge status-{{ lesson.status }}">{{ lesson.status_label }}</span>
+                                        {% endif %}
+                                        {% if edit_mode %}
+                                            <span class="pair-note">
+                                                {{ lesson.teacher }}{% if lesson.note %} · {{ lesson.note }}{% endif %}
+                                            </span>
+                                        {% endif %}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </div>
+
+                                {% if edit_mode %}
+                                    <div class="pair-actions">
+                                        {% if lesson and lesson.editable %}
+                                            <a class="square-button{% if edit_form and edit_form.act == 'move' and edit_form.slot == day.iso and edit_form.number == pair.number %} is-active{% endif %}"
+                                               href="?date={{ selected_date_iso }}&amp;edit=1&amp;act=move&amp;slot={{ day.iso }}&amp;number={{ pair.number }}"
+                                               title="Перенос: пара уйдёт на другую дату и номер"
+                                               aria-label="Перенос пары {{ pair.number }}">⇄</a>
+
+                                            <form method="post"
+                                                  action="{% url 'group_change' group_id=group.group_id %}">
+                                                {% csrf_token %}
+                                                <input type="hidden" name="kind" value="cancel">
+                                                <input type="hidden" name="date" value="{{ day.iso }}">
+                                                <input type="hidden" name="number" value="{{ pair.number }}">
+                                                <button class="square-button is-danger" type="submit"
+                                                        title="Отмена: пары в этот день не будет"
+                                                        aria-label="Отмена пары {{ pair.number }}">✕</button>
+                                            </form>
+
+                                            <a class="square-button{% if edit_form and edit_form.act == 'replace' and edit_form.slot == day.iso and edit_form.number == pair.number %} is-active{% endif %}"
+                                               href="?date={{ selected_date_iso }}&amp;edit=1&amp;act=replace&amp;slot={{ day.iso }}&amp;number={{ pair.number }}"
+                                               title="Замена: другой преподаватель или название"
+                                               aria-label="Замена пары {{ pair.number }}">↻</a>
+
+                                            <form method="post"
+                                                  action="{% url 'group_change' group_id=group.group_id %}">
+                                                {% csrf_token %}
+                                                <input type="hidden" name="kind" value="restore">
+                                                <input type="hidden" name="date" value="{{ day.iso }}">
+                                                <input type="hidden" name="number" value="{{ pair.number }}">
+                                                <button class="square-button is-restore" type="submit"
+                                                        {% if not lesson.change %}disabled{% endif %}
+                                                        title="Сброс: вернуть пару как в основном расписании"
+                                                        aria-label="Сброс пары {{ pair.number }}">↩</button>
+                                            </form>
+                                        {% endif %}
+                                    </div>
+                                {% else %}
+                                    <div class="pair-teacher">
+                                        {% if lesson %}
+                                            {{ lesson.teacher }}
+                                            {% if lesson.note %}
+                                                <span class="pair-note">{{ lesson.note }}</span>
+                                            {% endif %}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+                                {% endif %}
+
+                            </div>
+
+                            {% if edit_form and edit_form.slot == day.iso and edit_form.number == pair.number %}
+                                <div class="change-inline">
+                                    <p class="change-inline-title">
+                                        {% if edit_form.act == "move" %}Перенос{% else %}Замена{% endif %}:
+                                        <strong>{{ edit_form.subject }}</strong>
+                                        <span>{{ edit_form.teacher }}, {{ day.name }}, пара {{ pair.number }}</span>
+                                    </p>
+
+                                    <p class="change-inline-hint">
+                                        {% if edit_form.act == "move" %}
+                                            Пара уйдёт на выбранные дату и номер, а в этот день освободится.
+                                        {% else %}
+                                            Только на эту дату пару проведёт другой преподаватель и/или она будет называться иначе.
+                                        {% endif %}
+                                    </p>
+
+                                    <form class="users-form change-inline-form" method="post"
+                                          action="{% url 'group_change' group_id=group.group_id %}">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="kind" value="{{ edit_form.act }}">
+                                        <input type="hidden" name="date" value="{{ day.iso }}">
+                                        <input type="hidden" name="number" value="{{ pair.number }}">
+
+                                        {% if edit_form.act == "move" %}
+                                            <label for="new-date">Новая дата</label>
+                                            <input id="new-date" type="date" name="new_date"
+                                                   value="{{ edit_form.values.new_date }}" required>
+
+                                            <label for="new-number">Номер пары</label>
+                                            <select id="new-number" name="new_number">
+                                                {% for item in edit_form.pair_numbers %}
+                                                    <option value="{{ item }}"
+                                                        {% if item|stringformat:"s" == edit_form.values.new_number|stringformat:"s" %}selected{% endif %}>
+                                                        {{ item }}
+                                                    </option>
+                                                {% endfor %}
+                                            </select>
+                                        {% else %}
+                                            <label for="new-teacher">Другой преподаватель</label>
+                                            <select id="new-teacher" name="new_teacher">
+                                                <option value="">— тот же преподаватель —</option>
+                                                {% for teacher in edit_form.teachers %}
+                                                    <option value="{{ teacher.pk }}"
+                                                        {% if teacher.pk|stringformat:"s" == edit_form.values.new_teacher|stringformat:"s" %}selected{% endif %}>
+                                                        {{ teacher.teacher_name }}
+                                                    </option>
+                                                {% endfor %}
+                                            </select>
+
+                                            <label for="new-name">Другое название</label>
+                                            <input id="new-name" type="text" name="new_pair_name"
+                                                   maxlength="150" value="{{ edit_form.values.new_pair_name }}"
+                                                   placeholder="{{ edit_form.subject }}">
+                                        {% endif %}
+
+                                        <div class="change-inline-buttons">
+                                            <button class="auth-button" type="submit">Сохранить</button>
+                                            <a class="change-inline-cancel"
+                                               href="?date={{ selected_date_iso }}&amp;edit=1">Закрыть</a>
+                                        </div>
+                                    </form>
+                                </div>
+                            {% endif %}
+                            {% endwith %}
+
+                        {% endfor %}
+
+                    </div>
+                {% endif %}
+
+            </article>
+
+        {% endfor %}
+
+    </section>
+
+</div>
+{% endblock %}

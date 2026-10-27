@@ -1,0 +1,29 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="auth-page">
+    <section class="auth-card">
+        <h1>Код доступа</h1>
+        <p class="auth-lead">
+            Введите код, который выдал администратор.
+            Ваша роль сейчас: <strong>{{ current_role }}</strong>.
+        </p>
+
+        <form method="post" action="{% url 'redeem' %}">
+            {% csrf_token %}
+
+            <div class="auth-field">
+                <label for="code">Код</label>
+                <input id="code" name="code" type="text"
+                       autocomplete="off" placeholder="XXXX-XXXX" required>
+
+                {% if error %}
+                    <p class="auth-error" role="alert">{{ error }}</p>
+                {% endif %}
+            </div>
+
+            <button class="auth-button" type="submit">Применить</button>
+        </form>
+    </section>
+</div>
+{% endblock %}

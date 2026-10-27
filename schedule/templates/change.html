@@ -1,0 +1,90 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header">
+        <div class="daily-heading">
+            <h1>{% if kind == "move" %}ПЕРЕНОС ПАРЫ{% else %}ЗАМЕНА ПАРЫ{% endif %}</h1>
+            <p class="daily-subtitle">
+                {{ group.group_name }}
+                <span class="daily-meta">
+                    {{ date_label }} · пара {{ number }}{% if time %}, {{ time.pair_start_time|time:"H:i" }}–{{ time.pair_end_time|time:"H:i" }}{% endif %}
+                </span>
+            </p>
+        </div>
+
+        <a class="date-nav-link" href="{{ back_url }}">← К расписанию</a>
+    </header>
+
+    <section class="users-card change-card">
+
+        <p class="change-current">
+            <strong>{{ pair.pair_name }}</strong>
+            <span>{{ pair.teacher.teacher_name }}</span>
+        </p>
+
+        <p class="users-hint">
+            {% if kind == "move" %}
+                Пара уйдёт на выбранные дату и номер, а в исходный день
+                освободится. Основное расписание не меняется.
+            {% else %}
+                Только на эту дату пару проведёт другой преподаватель и/или
+                она будет называться иначе. Основное расписание не меняется.
+            {% endif %}
+        </p>
+
+        {% for error in errors %}
+            <p class="auth-error" role="alert">{{ error }}</p>
+        {% endfor %}
+
+        <form class="users-form" method="post"
+              action="{% url 'group_change' group_id=group.group_id %}">
+            {% csrf_token %}
+            <input type="hidden" name="kind" value="{{ kind }}">
+            <input type="hidden" name="date" value="{{ date_iso }}">
+            <input type="hidden" name="number" value="{{ number }}">
+
+            {% if kind == "move" %}
+
+                <label for="new-date">Новая дата</label>
+                <input id="new-date" type="date" name="new_date"
+                       value="{{ values.new_date }}" required>
+
+                <label for="new-number">Номер пары</label>
+                <select id="new-number" name="new_number">
+                    {% for item in pair_numbers %}
+                        <option value="{{ item }}"
+                            {% if item|stringformat:"s" == values.new_number|stringformat:"s" %}selected{% endif %}>
+                            {{ item }}
+                        </option>
+                    {% endfor %}
+                </select>
+
+            {% else %}
+
+                <label for="new-teacher">Другой преподаватель</label>
+                <select id="new-teacher" name="new_teacher">
+                    <option value="">— тот же преподаватель —</option>
+                    {% for teacher in teachers %}
+                        <option value="{{ teacher.pk }}"
+                            {% if teacher.pk|stringformat:"s" == values.new_teacher|stringformat:"s" %}selected{% endif %}>
+                            {{ teacher.teacher_name }}
+                        </option>
+                    {% endfor %}
+                </select>
+
+                <label for="new-name">Другое название</label>
+                <input id="new-name" type="text" name="new_pair_name"
+                       maxlength="150" value="{{ values.new_pair_name }}"
+                       placeholder="{{ pair.pair_name }}">
+
+            {% endif %}
+
+            <button class="auth-button" type="submit">Сохранить</button>
+        </form>
+
+    </section>
+
+</div>
+{% endblock %}

@@ -1,0 +1,176 @@
+{% extends "main.html" %}
+
+{% block content %}
+
+<div class="daily-page">
+
+    <header class="daily-header">
+
+        <div class="daily-heading">
+            <h1>РАСПИСАНИЕ</h1>
+
+            <p class="daily-subtitle">
+                {% if selected_teacher %}
+                    {{ selected_teacher.teacher_name }}
+                {% else %}
+                    Преподаватели
+                {% endif %}
+            </p>
+        </div>
+
+        <form
+            class="weekday-form"
+            method="get"
+            action="{% url 'teachers' %}"
+        >
+            {% if date_param %}
+                <input type="hidden" name="date" value="{{ date_param }}">
+            {% endif %}
+
+            <label for="teacher">Преподаватель</label>
+
+            <select id="teacher" name="teacher">
+                {% for teacher in teachers %}
+                    <option
+                        value="{{ teacher.teacher_id }}"
+                        {% if teacher.teacher_id == selected_teacher_id %}selected{% endif %}
+                    >
+                        {{ teacher.teacher_name }}
+                    </option>
+                {% endfor %}
+            </select>
+
+            <label for="shift">Смена</label>
+
+            <select id="shift" name="shift">
+                <option
+                    value=""
+                    {% if not selected_shift_id %}selected{% endif %}
+                >
+                    Все смены
+                </option>
+
+                {% for shift in shifts %}
+                    <option
+                        value="{{ shift.shift_id }}"
+                        {% if shift.shift_id == selected_shift_id %}selected{% endif %}
+                    >
+                        {{ shift.shift_id }} смена
+                    </option>
+                {% endfor %}
+            </select>
+
+            <button type="submit">Показать</button>
+        </form>
+
+    </header>
+
+    <div class="teacher-toolbar">
+        <nav class="date-nav" aria-label="Навигация по датам">
+            <a class="date-nav-link" href="{{ prev_url }}">← Назад</a>
+
+            <span class="date-nav-label">{{ week_label }}</span>
+
+            <a class="date-nav-link" href="{{ today_url }}">Сегодня</a>
+            <a class="date-nav-link" href="{{ next_url }}">Вперёд →</a>
+        </nav>
+    </div>
+
+    <section class="days-grid">
+
+            {% for day in schedule_days %}
+
+                <article class="day-card{% if day.is_today %} is-today{% endif %}">
+
+                    <header class="day-title teacher-day-title">
+
+                        <span>
+                            {{ day.name }}
+                            <span class="day-date">{{ day.label }}</span>
+                        </span>
+
+                        <span class="daily-meta">{{ day.shift_label }}</span>
+
+                    </header>
+
+                    {% if day.off_reason %}
+
+                        <p class="day-off">{{ day.off_reason }}</p>
+
+                    {% else %}
+
+                        <div class="pairs">
+
+                            {% for pair in day.pairs %}
+
+                                {% with first=pair.lessons.0 %}
+                                <div class="pair{% if first.status %} is-{{ first.status }}{% endif %}">
+
+                                    <div class="pair-number">
+                                        {{ pair.number }}
+                                    </div>
+
+                                    <div class="pair-time">
+                                        {% if pair.lessons %}
+                                            {% for lesson in pair.lessons %}
+                                                <div>
+                                                    {% if lesson.time %}
+                                                        {{ lesson.time.pair_start_time|time:"H:i" }}–{{ lesson.time.pair_end_time|time:"H:i" }}
+                                                    {% else %}
+                                                        —
+                                                    {% endif %}
+                                                </div>
+                                            {% endfor %}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+
+                                    <div class="pair-name">
+                                        {% if pair.lessons %}
+                                            {% for lesson in pair.lessons %}
+                                                <div>
+                                                    {{ lesson.subject }}
+                                                    {% if lesson.status_label %}
+                                                        <span class="status-badge status-{{ lesson.status }}">{{ lesson.status_label }}</span>
+                                                    {% endif %}
+                                                </div>
+                                            {% endfor %}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+
+                                    <div class="pair-teacher">
+                                        {% if pair.lessons %}
+                                            {% for lesson in pair.lessons %}
+                                                <div>
+                                                    {{ lesson.group.group_name }}
+                                                    {% if lesson.note %}
+                                                        <span class="pair-note">{{ lesson.note }}</span>
+                                                    {% endif %}
+                                                </div>
+                                            {% endfor %}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+
+                                </div>
+                                {% endwith %}
+
+                            {% endfor %}
+
+                        </div>
+
+                    {% endif %}
+
+                </article>
+
+            {% endfor %}
+
+    </section>
+
+</div>
+
+{% endblock %}

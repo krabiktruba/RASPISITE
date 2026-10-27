@@ -1,0 +1,42 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="auth-page">
+    <section class="auth-card">
+        <h1>Регистрация</h1>
+        <p class="auth-lead">Придумайте логин и пароль для входа на сайт.</p>
+
+        <form method="post" action="{% url 'register' %}">
+            {% csrf_token %}
+
+            {% if form.non_field_errors %}
+                <p class="auth-error" role="alert">
+                    {{ form.non_field_errors|join:" " }}
+                </p>
+            {% endif %}
+
+            {% for field in form %}
+                <div class="auth-field">
+                    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+
+                    {% for error in field.errors %}
+                        <p class="auth-error">{{ error }}</p>
+                    {% endfor %}
+
+                    {% if field.help_text %}
+                        <div class="auth-help">{{ field.help_text|safe }}</div>
+                    {% endif %}
+                </div>
+            {% endfor %}
+
+            <button class="auth-button" type="submit">Зарегистрироваться</button>
+        </form>
+
+        <p class="auth-switch">
+            Уже есть аккаунт?
+            <a href="{% url 'login' %}">Войти</a>
+        </p>
+    </section>
+</div>
+{% endblock %}

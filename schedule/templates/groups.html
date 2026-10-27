@@ -1,0 +1,150 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header">
+        <div class="daily-heading">
+            <h1>ГРУППЫ</h1>
+            <p class="daily-subtitle">
+                {% if is_today_selected %}Сегодня — {% endif %}{{ selected_label }}
+            </p>
+        </div>
+
+        <nav class="date-nav" aria-label="Недели">
+            <a class="date-nav-link" href="?date={{ prev_week_iso }}">
+                ← Неделя
+            </a>
+            <a class="date-nav-link" href="{% url 'groups' %}">Сегодня</a>
+            <a class="date-nav-link" href="?date={{ next_week_iso }}">
+                Неделя →
+            </a>
+        </nav>
+    </header>
+
+    <nav class="weekday-tabs" aria-label="Дни недели">
+        {% for tab in week_tabs %}
+            <a class="weekday-tab{% if tab.is_selected %} is-selected{% endif %}{% if tab.is_today %} is-today{% endif %}{% if tab.is_off %} is-off{% endif %}"
+               href="?date={{ tab.iso }}"
+               title="{{ tab.name }}, {{ tab.label }}"
+               {% if tab.is_selected %}aria-current="page"{% endif %}>
+                <span class="tab-day">{{ tab.short }}</span>
+                <span class="tab-number">{{ tab.number }}</span>
+            </a>
+        {% endfor %}
+    </nav>
+
+    {% if day_off %}
+        <p class="day-off">{{ day_off }}</p>
+    {% else %}
+        <section class="days-grid">
+            {% for item in schedule_groups %}
+                <article class="day-card">
+
+                    <header class="day-title teacher-day-title">
+                        <span>{{ item.group.group_name }}</span>
+
+                        <span class="daily-meta">
+                            {{ item.group.group_course }}
+                            ·
+                            {{ item.group.shift }}
+                            {% if user.is_staff %}
+                                ·
+                                <a class="card-link"
+                                   href="{% url 'group_edit' group_id=item.group.group_id %}">
+                                    Изменить
+                                </a>
+                            {% endif %}
+                        </span>
+                    </header>
+
+                    <p class="group-curator">
+                        Куратор:
+                        {% if item.group.group_curator %}
+                            <span class="group-curator-name">{{ item.group.group_curator.teacher_name }}</span>
+                        {% else %}
+                            <span class="group-curator-none">не назначен</span>
+                        {% endif %}
+                    </p>
+
+                    <div class="pairs">
+                        {% for pair in item.pairs %}
+                            {% with lesson=pair.lesson %}
+                            <div class="pair{% if lesson.status %} is-{{ lesson.status }}{% endif %}">
+                                <div class="pair-number">
+                                    {{ pair.number }}
+                                </div>
+
+                                <div class="pair-time">
+                                    {% if pair.time %}
+                                        {{ pair.time.pair_start_time|time:"H:i" }}–{{ pair.time.pair_end_time|time:"H:i" }}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </div>
+
+                                <div class="pair-name">
+                                    {% if lesson %}
+                                        {{ lesson.subject }}
+                                        {% if lesson.status_label %}
+                                            <span class="status-badge status-{{ lesson.status }}">{{ lesson.status_label }}</span>
+                                        {% endif %}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </div>
+
+                                <div class="pair-teacher">
+                                    {% if lesson %}
+                                        {{ lesson.teacher }}
+                                        {% if lesson.note %}
+                                            <span class="pair-note">{{ lesson.note }}</span>
+                                        {% endif %}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endwith %}
+                        {% endfor %}
+                    </div>
+
+                </article>
+            {% empty %}
+                <p>Группы пока не созданы.</p>
+            {% endfor %}
+        </section>
+
+        {% if page_obj.has_other_pages %}
+            <nav class="pagination" aria-label="Страницы списка групп">
+                {% if page_obj.has_previous %}
+                    <a href="?date={{ selected_date_iso }}&amp;page={{ page_obj.previous_page_number }}">
+                        ← Назад
+                    </a>
+                {% endif %}
+
+                {% for number in page_numbers %}
+                    {% if number is None %}
+                        <span class="pagination-gap">…</span>
+                    {% elif number == page_obj.number %}
+                        <span class="pagination-current" aria-current="page">
+                            {{ number }}
+                        </span>
+                    {% else %}
+                        <a href="?date={{ selected_date_iso }}&amp;page={{ number }}">
+                            {{ number }}
+                        </a>
+                    {% endif %}
+                {% endfor %}
+
+                {% if page_obj.has_next %}
+                    <a href="?date={{ selected_date_iso }}&amp;page={{ page_obj.next_page_number }}">
+                        Вперёд →
+                    </a>
+                {% endif %}
+            </nav>
+        {% endif %}
+    {% endif %}
+
+</div>
+{% endblock %}

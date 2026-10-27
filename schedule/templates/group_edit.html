@@ -1,0 +1,94 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header">
+        <div class="daily-heading">
+            <h1>РЕДАКТОР РАСПИСАНИЯ</h1>
+            <p class="daily-subtitle">
+                {{ group.group_name }}
+                <span class="daily-meta">
+                    {{ group.group_course }} · {{ group.shift }}
+                </span>
+            </p>
+        </div>
+
+        <a class="date-nav-link"
+           href="{% url 'group_schedule' group_id=group.group_id %}">
+            ← К расписанию
+        </a>
+    </header>
+
+    {% if errors %}
+        <div class="edit-errors" role="alert">
+            <strong>Расписание не сохранено:</strong>
+            <ul>
+                {% for error in errors %}
+                    <li>{{ error }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
+    {% if not pair_options %}
+        <p class="day-off">
+            У этой группы пока нет пар. Сначала создайте их в «Кузне»
+            (форма «Пары»), затем вернитесь сюда.
+        </p>
+    {% else %}
+
+        <form method="post"
+              action="{% url 'group_edit' group_id=group.group_id %}">
+            {% csrf_token %}
+
+            <section class="days-grid">
+                {% for day in edit_days %}
+                    <article class="day-card">
+
+                        <header class="day-title">{{ day.name }}</header>
+
+                        <div class="pairs">
+                            {% for row in day.rows %}
+                                <div class="pair edit-row">
+                                    <div class="pair-number">{{ row.number }}</div>
+
+                                    <div class="pair-time">
+                                        {% if row.time %}
+                                            {{ row.time.pair_start_time|time:"H:i" }}–{{ row.time.pair_end_time|time:"H:i" }}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+
+                                    <div class="edit-select">
+                                        <select name="{{ row.field }}"
+                                                aria-label="{{ day.name }}, пара {{ row.number }}">
+                                            <option value="">— нет пары —</option>
+                                            {% for pair in pair_options %}
+                                                <option value="{{ pair.pk }}"
+                                                    {% if pair.pk == row.selected %}selected{% endif %}>
+                                                    {{ pair.pair_name }} — {{ pair.teacher.teacher_name }}
+                                                </option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+
+                    </article>
+                {% endfor %}
+            </section>
+
+            <div class="edit-actions">
+                <button class="auth-button edit-save" type="submit">
+                    Сохранить расписание
+                </button>
+            </div>
+        </form>
+
+    {% endif %}
+
+</div>
+{% endblock %}

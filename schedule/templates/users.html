@@ -1,0 +1,182 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header">
+        <div class="daily-heading">
+            <h1>ПОЛЬЗОВАТЕЛИ</h1>
+            <p class="daily-subtitle">Студенты, преподаватели, роли и группы</p>
+        </div>
+    </header>
+
+    <div class="users-layout">
+
+        <div class="users-side">
+
+            <section class="users-card">
+                <h2>Новый пользователь</h2>
+                <p class="users-hint">
+                    Выберите роль, введите ФИО (отчество можно пропустить),
+                    почту Gmail (она станет логином) и пароль. Студента нужно
+                    указать в группе. Преподавателю можно выбрать группу, которую
+                    он будет курировать. Роль и группа остаются выбранными после
+                    добавления, чтобы вносить следующих людей подряд.
+                </p>
+
+                <form class="users-form" method="post"
+                      action="{% url 'users' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="create_user">
+                    <input type="hidden" name="page" value="{{ page_obj.number }}">
+
+                    {% if new_user_form.non_field_errors %}
+                        <p class="auth-error" role="alert">
+                            {{ new_user_form.non_field_errors|join:" " }}
+                        </p>
+                    {% endif %}
+
+                    {% for field in new_user_form %}
+                        <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                        {{ field }}
+
+                        {% for error in field.errors %}
+                            <p class="auth-error">{{ error }}</p>
+                        {% endfor %}
+                    {% endfor %}
+
+                    <button class="auth-button" type="submit">
+                        Добавить пользователя
+                    </button>
+                </form>
+            </section>
+
+        </div>
+
+        <section class="users-card users-table-card">
+            <h2>Пользователи</h2>
+
+            <div class="workshop-table-wrap">
+                <table class="users-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">ФИО</th>
+                            <th scope="col">Почта (логин)</th>
+                            <th scope="col">Роль</th>
+                            <th scope="col">Группа</th>
+                            <th scope="col">Изменить роль</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in rows %}
+                            <tr>
+                                <th scope="row">
+                                    {% if row.full_name %}{{ row.full_name }}{% else %}<span class="users-hint">—</span>{% endif %}
+                                </th>
+
+                                <td>{{ row.user.get_username }}</td>
+
+                                <td>
+                                    <span class="role-badge role-{{ row.role }}">
+                                        {{ row.role_label }}
+                                    </span>
+                                </td>
+
+                                <td>
+                                    {% if row.is_student %}
+                                        <form class="role-form" method="post"
+                                              action="{% url 'users' %}">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="action" value="set_group">
+                                            <input type="hidden" name="user_id" value="{{ row.user.pk }}">
+                                            <input type="hidden" name="page" value="{{ page_obj.number }}">
+
+                                            <select name="group"
+                                                    aria-label="Группа {{ row.user.get_username }}">
+                                                <option value="">— не назначена —</option>
+                                                {% for group in groups %}
+                                                    <option value="{{ group.pk }}"
+                                                        {% if row.group and group.pk == row.group.pk %}selected{% endif %}>
+                                                        {{ group.group_name }}
+                                                    </option>
+                                                {% endfor %}
+                                            </select>
+
+                                            <button type="submit">Сохранить</button>
+                                        </form>
+                                    {% else %}
+                                        <span class="users-hint">—</span>
+                                    {% endif %}
+                                </td>
+
+                                <td>
+                                    {% if row.locked %}
+                                        <span class="users-hint">
+                                            {% if row.user.is_superuser %}суперпользователь{% else %}это вы{% endif %}
+                                        </span>
+                                    {% else %}
+                                        <form class="role-form" method="post"
+                                              action="{% url 'users' %}">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="action" value="set_role">
+                                            <input type="hidden" name="user_id" value="{{ row.user.pk }}">
+                                            <input type="hidden" name="page" value="{{ page_obj.number }}">
+
+                                            <select name="role"
+                                                    aria-label="Роль {{ row.user.get_username }}">
+                                                {% for value, label in role_choices %}
+                                                    <option value="{{ value }}"
+                                                        {% if value == row.role %}selected{% endif %}>
+                                                        {{ label }}
+                                                    </option>
+                                                {% endfor %}
+                                            </select>
+
+                                            <select name="teacher"
+                                                    aria-label="Преподаватель для {{ row.user.get_username }}">
+                                                <option value="">— по ФИО пользователя —</option>
+                                                {% for teacher in row.teacher_options %}
+                                                    <option value="{{ teacher.pk }}"
+                                                        {% if teacher.pk == row.teacher_id %}selected{% endif %}>
+                                                        {{ teacher.teacher_name }}
+                                                    </option>
+                                                {% endfor %}
+                                            </select>
+
+                                            <button type="submit">Сохранить</button>
+                                        </form>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            {% if page_obj.has_other_pages %}
+                <nav class="pagination" aria-label="Страницы списка пользователей">
+                    {% if page_obj.has_previous %}
+                        <a href="?page={{ page_obj.previous_page_number }}">← Назад</a>
+                    {% endif %}
+
+                    {% for number in page_numbers %}
+                        {% if number is None %}
+                            <span class="pagination-gap">…</span>
+                        {% elif number == page_obj.number %}
+                            <span class="pagination-current" aria-current="page">{{ number }}</span>
+                        {% else %}
+                            <a href="?page={{ number }}">{{ number }}</a>
+                        {% endif %}
+                    {% endfor %}
+
+                    {% if page_obj.has_next %}
+                        <a href="?page={{ page_obj.next_page_number }}">Вперёд →</a>
+                    {% endif %}
+                </nav>
+            {% endif %}
+        </section>
+
+    </div>
+</div>
+{% endblock %}

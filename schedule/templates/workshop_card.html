@@ -1,0 +1,124 @@
+{# Карточка раздела Кузни: добавление или (в режиме редактирования) изменение и удаление #}
+<section class="workshop-card{% if card.editing %} is-editing{% endif %}">
+    <h2>{{ card.title }}</h2>
+
+    {% if not card.editing %}
+
+        <form method="post" action="{% url 'workshop' %}">
+            {% csrf_token %}
+            <input type="hidden" name="time_shift"
+                   value="{{ selected_shift_id }}">
+            <input type="hidden" name="time_mode"
+                   value="{{ selected_time_mode }}">
+
+            {{ card.form.as_p }}
+
+            <button class="workshop-button" type="submit"
+                    name="action" value="{{ card.add_action }}">
+                Добавить
+            </button>
+        </form>
+
+        <a class="workshop-button workshop-button-link"
+           href="{{ card.edit_url }}">
+            Изменить
+        </a>
+
+    {% else %}
+
+        <p class="workshop-picker-title">
+            Выберите {{ card.noun }}, нажав на название:
+        </p>
+
+        {% if card.items %}
+            <ul class="workshop-picker">
+                {% for entry in card.items %}
+                    <li>
+                        <a class="workshop-picker-link{% if entry.selected %} is-selected{% endif %}"
+                           href="{{ entry.url }}"
+                           {% if entry.selected %}aria-current="true"{% endif %}>
+                            {{ entry.label }}
+                        </a>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="workshop-hint">Записей пока нет.</p>
+        {% endif %}
+
+        {% if card.item %}
+
+            <form class="workshop-edit-form" method="post"
+                  action="{% url 'workshop' %}">
+                {% csrf_token %}
+                <input type="hidden" name="time_shift"
+                       value="{{ selected_shift_id }}">
+                <input type="hidden" name="time_mode"
+                       value="{{ selected_time_mode }}">
+                <input type="hidden" name="edit" value="{{ card.key }}">
+                <input type="hidden" name="item" value="{{ card.item.pk }}">
+
+                {% if card.confirm %}
+
+                    <p class="workshop-confirm" role="alert">
+                        {{ card.confirm_text }}
+                    </p>
+
+                    <div class="workshop-button-row">
+                        <button class="workshop-button workshop-button-danger"
+                                type="submit"
+                                name="action" value="delete_confirmed">
+                            Удалить
+                        </button>
+
+                        <a class="workshop-button workshop-button-link"
+                           href="{{ card.back_url }}">
+                            Отменить
+                        </a>
+                    </div>
+
+                {% else %}
+
+                    {{ card.form.as_p }}
+
+                    {% if card.key == "pair" %}
+                        <p class="workshop-hint">
+                            Группу у существующей пары изменить нельзя —
+                            создайте новую пару.
+                        </p>
+                    {% endif %}
+
+                    <button class="workshop-button" type="submit"
+                            name="action" value="update_item">
+                        Изменить
+                    </button>
+
+                    <div class="workshop-button-row">
+                        <button class="workshop-button workshop-button-danger"
+                                type="submit"
+                                name="action" value="delete_item">
+                            Удалить
+                        </button>
+
+                        <a class="workshop-button workshop-button-link"
+                           href="{{ card.cancel_url }}">
+                            Отменить
+                        </a>
+                    </div>
+
+                {% endif %}
+            </form>
+
+        {% else %}
+
+            <div class="workshop-button-row">
+                <a class="workshop-button workshop-button-link"
+                   href="{{ card.cancel_url }}">
+                    Отменить
+                </a>
+            </div>
+
+        {% endif %}
+
+    {% endif %}
+</section>

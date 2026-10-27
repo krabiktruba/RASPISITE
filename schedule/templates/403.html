@@ -1,0 +1,16 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="auth-page">
+    <section class="auth-card">
+        <h1>Нет доступа</h1>
+        <p class="auth-lead">
+            Эта страница доступна только администраторам.
+        </p>
+
+        <p class="auth-switch">
+            <a href="{% url 'groups' %}">Вернуться к расписанию</a>
+        </p>
+    </section>
+</div>
+{% endblock %}

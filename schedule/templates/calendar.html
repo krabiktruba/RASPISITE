@@ -1,0 +1,87 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page calendar-page">
+
+    <header class="daily-header">
+        <div class="daily-heading">
+            <h1>КАЛЕНДАРЬ</h1>
+            <p class="daily-subtitle">{{ month_name }} {{ year }}</p>
+        </div>
+
+        <nav class="date-nav" aria-label="Месяцы">
+            {% if prev %}
+                <a class="date-nav-link"
+                   href="?year={{ prev.year }}&amp;month={{ prev.month }}">
+                    ← Назад
+                </a>
+            {% endif %}
+
+            {% if not is_current_month %}
+                <a class="date-nav-link" href="{% url 'calendar' %}">
+                    Сегодня
+                </a>
+            {% endif %}
+
+            {% if next %}
+                <a class="date-nav-link"
+                   href="?year={{ next.year }}&amp;month={{ next.month }}">
+                    Вперёд →
+                </a>
+            {% endif %}
+        </nav>
+    </header>
+
+    <table class="calendar-table">
+        <thead>
+            <tr>
+                {% for head in weekday_heads %}
+                    <th scope="col" title="{{ head.name }}">{{ head.short }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+
+        <tbody>
+            {% for week in calendar_weeks %}
+                <tr>
+                    {% for cell in week %}
+                        <td class="calendar-cell{% if not cell.in_month %} is-other{% endif %}{% if cell.is_sunday %} is-sunday{% endif %}{% if cell.is_holiday %} is-holiday{% endif %}{% if cell.is_today %} is-today{% endif %}">
+                            <a href="{{ cell.url }}"
+                               {% if cell.is_holiday %}title="{{ cell.holiday_name|default:'Праздничный день' }}"{% endif %}
+                               {% if cell.is_today %}aria-current="date"{% endif %}>
+                                <span class="calendar-number">{{ cell.number }}</span>
+                                {% if cell.is_holiday %}
+                                    <span class="calendar-note">
+                                        {{ cell.holiday_name|default:"Праздник" }}
+                                    </span>
+                                {% endif %}
+                            </a>
+                        </td>
+                    {% endfor %}
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <ul class="calendar-legend">
+        <li><span class="legend-box is-today"></span> Сегодня</li>
+        <li><span class="legend-box is-holiday"></span> Праздничный день</li>
+        <li><span class="legend-box is-sunday"></span> Воскресенье</li>
+    </ul>
+
+    {% if month_holidays %}
+        <section class="calendar-holidays">
+            <h2>Праздничные дни месяца</h2>
+            <ul>
+                {% for holiday in month_holidays %}
+                    <li>
+                        <strong>{{ holiday.label }}</strong>
+                        {% if holiday.name %}— {{ holiday.name }}{% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
+        </section>
+    {% endif %}
+
+</div>
+{% endblock %}

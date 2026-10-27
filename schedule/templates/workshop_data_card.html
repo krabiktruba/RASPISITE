@@ -1,0 +1,114 @@
+{# Карточка «Импорт и экспорт»: CSV, который выдал экспорт, читает импорт #}
+<section class="workshop-card workshop-data-card">
+    <h2>Импорт и экспорт</h2>
+
+    <!-- Экспорт: обычная ссылка на файл, без JavaScript -->
+    <form class="workshop-data-form" method="get"
+          action="{% url 'workshop_export' %}">
+        <label for="export-kind">Скачать</label>
+
+        <select id="export-kind" name="kind">
+            {% for key, title in data_kinds %}
+                <option value="{{ key }}">{{ title }}</option>
+            {% endfor %}
+        </select>
+
+        <div class="workshop-button-row">
+            <button class="workshop-button" type="submit">
+                Скачать CSV
+            </button>
+
+            <button class="workshop-button workshop-button-link"
+                    type="submit" name="template" value="1">
+                Пустой шаблон
+            </button>
+        </div>
+    </form>
+
+    <!-- Импорт: файл, который выдал экспорт -->
+    <form class="workshop-data-form" method="post"
+          enctype="multipart/form-data" action="{% url 'workshop' %}">
+        {% csrf_token %}
+        <input type="hidden" name="time_shift" value="{{ selected_shift_id }}">
+        <input type="hidden" name="time_mode" value="{{ selected_time_mode }}">
+
+        <label for="import-kind">Загрузить</label>
+
+        <select id="import-kind" name="kind">
+            {% for key, title in data_kinds %}
+                <option value="{{ key }}"
+                    {% if key == import_kind %}selected{% endif %}>
+                    {{ title }}
+                </option>
+            {% endfor %}
+        </select>
+
+        <label for="import-file">Файл CSV</label>
+        <input id="import-file" type="file" name="file"
+               accept=".csv,text/csv">
+
+        <label class="workshop-check">
+            <input type="checkbox" name="dry_run" value="1"
+                {% if import_report.dry_run %}checked{% endif %}>
+            <span>Только проверить, ничего не сохранять</span>
+        </label>
+
+        <button class="workshop-button" type="submit"
+                name="action" value="import_csv">
+            Загрузить
+        </button>
+    </form>
+
+    <p class="workshop-hint">
+        Принимаются только файлы в том формате, который выдаёт экспорт.
+        Порядок загрузки: Звонки, Преподаватели, Группы, Пары, Расписание.
+        Если в файле есть ошибки, не сохраняется ничего.
+    </p>
+
+    {% if import_report %}
+        <div class="workshop-report{% if import_report.fatal or import_report.errors %} is-error{% else %} is-ok{% endif %}"
+             role="status">
+
+            <p class="workshop-report-title">
+                {{ import_report.title|default:"Импорт" }}:
+                {% if import_report.fatal %}
+                    файл не загружен
+                {% elif import_report.dry_run %}
+                    проверка
+                {% else %}
+                    загрузка
+                {% endif %}
+            </p>
+
+            {% if import_report.fatal %}
+                <p>{{ import_report.fatal|capfirst }}.</p>
+            {% else %}
+                <p>
+                    {% if import_report.dry_run %}Добавилось бы{% else %}Добавлено{% endif %}:
+                    {{ import_report.created }};
+                    {% if import_report.dry_run %}обновилось бы{% else %}обновлено{% endif %}:
+                    {{ import_report.updated }};
+                    без изменений: {{ import_report.unchanged }}.
+                </p>
+
+                {% if import_report.errors %}
+                    <p class="workshop-report-title">
+                        Ничего не сохранено. Ошибок: {{ import_report.errors|length }}
+                    </p>
+
+                    <ul class="workshop-report-list">
+                        {% for item in import_report.errors|slice:":50" %}
+                            <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+
+                    {% if import_report.errors|length > 50 %}
+                        <p>Показаны первые 50 ошибок.</p>
+                    {% endif %}
+                {% elif import_report.dry_run %}
+                    <p>Ошибок нет. Снимите галочку и загрузите файл ещё раз.</p>
+                {% endif %}
+            {% endif %}
+        </div>
+    {% endif %}
+</section>

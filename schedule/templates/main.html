@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>RASPISITE</title>
+
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'style.css' %}">
+</head>
+
+<body>
+
+    <header class="site-header">
+        <div class="header-inner">
+
+            <a href="{% url 'home' %}" class="brand">
+                RASPISITE<span class="brand-dot">.</span>
+            </a>
+
+            <nav class="main-nav">
+                {% if user.is_authenticated %}
+                    {% if my_group_id %}
+                        <a href="{% url 'group_schedule' group_id=my_group_id %}" class="nav-link">
+                            Моё расписание
+                        </a>
+                    {% else %}
+                        <a href="{% url 'groups' %}" class="nav-link">
+                            Расписание
+                        </a>
+                    {% endif %}
+                    <a href="{% url 'groups' %}" class="nav-link">
+                        Группы
+                    </a>
+                    <a href="{% url 'teachers' %}" class="nav-link">
+                        Преподаватели
+                    </a>
+                    <a href="{% url 'calendar' %}" class="nav-link">
+                        Календарь
+                    </a>
+                    {% if user.is_staff %}
+                        <a href="{% url 'users' %}" class="nav-link">
+                            Пользователи
+                        </a>
+                        <a href="{% url 'workshop' %}" class="nav-link">
+                            Кузня
+                        </a>
+                    {% endif %}
+
+                    <form class="nav-logout" method="post"
+                          action="{% url 'logout' %}">
+                        {% csrf_token %}
+                        <button type="submit" class="nav-link nav-button">
+                            Выйти ({{ user.get_username }})
+                        </button>
+                    </form>
+                {% else %}
+                    <a href="{% url 'login' %}" class="nav-link">Вход</a>
+                {% endif %}
+            </nav>
+
+        </div>
+    </header>
+
+    <main class="page-content">
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li class="message {{ message.tags }}">{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        {% block content %}
+        {% endblock %}
+    </main>
+
+</body>
+</html>

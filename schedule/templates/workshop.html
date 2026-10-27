@@ -1,0 +1,153 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div id="workshop-page" class="daily-page">
+
+    <header class="daily-header">
+        <div>
+            <h1 class="daily-heading">Мастерская</h1>
+            <p class="daily-subtitle">
+                Управление данными и расписанием звонков.
+            </p>
+        </div>
+    </header>
+
+    {% if error %}
+        <p class="workshop-message error" role="alert">{{ error }}</p>
+    {% endif %}
+
+    {% if success %}
+        <p class="workshop-message success" role="status">{{ success }}</p>
+    {% endif %}
+
+    <div class="workshop-grid">
+
+        <!-- Столбец 1: расписание звонков, импорт и экспорт -->
+        <div class="workshop-column">
+
+            <section class="workshop-card workshop-time-card">
+                <h2>Расписание звонков</h2>
+
+                <!-- Выбор смены и режима: обычная отправка формы, без JavaScript -->
+                <form method="post" action="{% url 'workshop' %}">
+                    {% csrf_token %}
+
+                    <div class="workshop-setting">
+                        <label for="time-shift">Смена</label>
+
+                        <select id="time-shift" name="time_shift">
+                            {% for shift in shifts %}
+                                <option
+                                    value="{{ shift.shift_id }}"
+                                    {% if shift.shift_id == selected_shift_id %}selected{% endif %}
+                                >
+                                    {{ shift.shift_id }} смена
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="workshop-setting">
+                        <label for="time-mode">Режим</label>
+
+                        <select id="time-mode" name="time_mode">
+                            <option value="study"
+                                {% if selected_time_mode == "study" %}selected{% endif %}>
+                                Учебное
+                            </option>
+
+                            <option value="break"
+                                {% if selected_time_mode == "break" %}selected{% endif %}>
+                                Перемены
+                            </option>
+                        </select>
+                    </div>
+
+                    <button class="workshop-button" type="submit"
+                            name="action" value="show_time">
+                        Показать
+                    </button>
+                </form>
+
+                <!-- Сохранение времени для выбранных смены и режима -->
+                <form method="post" action="{% url 'workshop' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="time_shift"
+                           value="{{ selected_shift_id }}">
+                    <input type="hidden" name="time_mode"
+                           value="{{ selected_time_mode }}">
+
+                    <fieldset>
+                        <legend>{{ time_table.number_label }}</legend>
+
+                        <div class="workshop-table-wrap">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th scope="col">№</th>
+                                        <th scope="col">Начало</th>
+                                        <th scope="col">Окончание</th>
+                                    </tr>
+                                </thead>
+
+                                <tbody>
+                                    {% for row in time_table.rows %}
+                                        <tr>
+                                            <th scope="row">{{ row.number }}</th>
+
+                                            <td>
+                                                <input
+                                                    type="time"
+                                                    name="{{ row.start_key }}"
+                                                    value="{{ row.start }}"
+                                                    aria-label="Начало {{ row.number }}"
+                                                >
+                                            </td>
+
+                                            <td>
+                                                <input
+                                                    type="time"
+                                                    name="{{ row.end_key }}"
+                                                    value="{{ row.end }}"
+                                                    aria-label="Окончание {{ row.number }}"
+                                                >
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </fieldset>
+
+                    <button class="workshop-button" type="submit"
+                            name="action" value="save_times">
+                        Сохранить
+                    </button>
+                </form>
+            </section>
+
+            {% include "workshop_data_card.html" %}
+
+        </div>
+
+        <!-- Столбец 2: группы и пары -->
+        <div class="workshop-column">
+
+            {% include "workshop_card.html" with card=cards.group %}
+
+            {% include "workshop_card.html" with card=cards.pair %}
+
+        </div>
+
+        <!-- Столбец 3: теги и типы тегов -->
+        <div class="workshop-column">
+
+            {% include "workshop_card.html" with card=cards.tag %}
+
+            {% include "workshop_card.html" with card=cards.tag_type %}
+
+        </div>
+
+    </div>
+</div>
+{% endblock %}
