@@ -1,0 +1,21 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="auth-page">
+    <section class="auth-card">
+        <h1>Форма устарела</h1>
+        <p class="auth-lead">
+            Страница была открыта слишком давно или данные для отправки
+            обновились (например, после входа в другой вкладке).
+            Ничего не сохранено и не потеряно.
+        </p>
+
+        <p class="auth-lead">
+            Откройте страницу заново и повторите действие. Кнопку «Назад»
+            в браузере для этого лучше не использовать.
+        </p>
+
+        <a class="auth-button auth-link-button" href="{{ back_url }}">Обновить страницу</a>
+    </section>
+</div>
+{% endblock %}

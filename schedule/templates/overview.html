@@ -1,0 +1,98 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page overview-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Кузня</p>
+            <h1>ОБЩЕЕ РАСПИСАНИЕ</h1>
+        </div>
+
+        <div class="page-head-actions">
+            <nav class="date-nav" aria-label="Переходы">
+                <a class="date-nav-link" href="{% url 'workshop' %}">← В Кузню</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Выбор смены: обычная отправка формы, без JavaScript -->
+    <form class="weekday-form overview-filter" method="get"
+          action="{% url 'overview' %}">
+        <label for="overview-shift">Смена</label>
+
+        <select id="overview-shift" name="shift">
+            <option value="">Все смены</option>
+            {% for shift in shifts %}
+                <option value="{{ shift.shift_id }}"
+                        {% if shift.shift_id == selected_shift_id %}selected{% endif %}>
+                    {{ shift.shift_id }} смена
+                </option>
+            {% endfor %}
+        </select>
+
+        <button type="submit">Показать</button>
+    </form>
+
+    <p class="overview-hint">
+        Постоянное недельное расписание, разовые правки не учитываются.
+        Нажмите на клетку, чтобы открыть редактор недели этой группы.
+    </p>
+
+    {% if rows %}
+        <div class="overview-wrap">
+            <table class="overview-table">
+                <thead>
+                    <tr>
+                        <th scope="col" class="overview-corner">Группа</th>
+                        {% for column in columns %}
+                            <th scope="col">{{ column.name }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for row in rows %}
+                        <tr>
+                            <th scope="row" class="overview-group">
+                                <span class="group-name">
+                                    <a class="overview-group-link"
+                                       href="{% url 'group_schedule' row.group.group_id %}">{{ row.group.group_name }}</a>
+                                    {% include "tag_chip.html" with tag=row.group.group_tag %}
+                                </span>
+                                <span class="overview-group-meta">
+                                    {{ row.group.group_course_id }} курс · {{ row.group.shift_id }} смена
+                                </span>
+                            </th>
+
+                            {% for cell in row.cells %}
+                                <td class="overview-cell overview-tone-{{ cell.tone }}">
+                                    <a class="overview-cell-link"
+                                       href="{{ cell.url }}"
+                                       title="{{ cell.label }}">
+                                        {% if cell.lessons %}
+                                            <ul>
+                                                {% for lesson in cell.lessons %}
+                                                    <li title="{{ lesson.name }} — {{ lesson.teacher }}">
+                                                        <span class="overview-number">{{ lesson.number }}</span>
+                                                        <span class="overview-name">{{ lesson.name }}</span>
+                                                    </li>
+                                                {% endfor %}
+                                            </ul>
+                                        {% else %}
+                                            <span class="overview-empty">&nbsp;</span>
+                                        {% endif %}
+                                    </a>
+                                </td>
+                            {% endfor %}
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <p class="day-off">Групп пока нет. Добавьте их в Кузне.</p>
+    {% endif %}
+
+</div>
+{% endblock %}
