@@ -1,7 +1,10 @@
+import re
 from datetime import date, time
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.messages import constants as message_levels
 from django.contrib.messages import get_messages
@@ -11,7 +14,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import NoReverseMatch, reverse
 
@@ -27,6 +30,13 @@ from .access import (
 )
 from .forms import MAX_FAILED_LOGINS
 from .gmail import normalize_gmail
+from .tags import (
+    TAG_COLOR_DEFAULT,
+    build_tag_css,
+    color_class,
+    normalize_color,
+    text_color,
+)
 from .models import (
     ROLE_ADMIN,
     ROLE_TEACHER,
@@ -1608,6 +1618,352 @@ class WorkshopLayoutTests(BaseTestCase):
         self.assertLess(groups, pairs)
         self.assertLess(pairs, tags)
         self.assertLess(tags, tag_types)
+
+
+class TagColorHelpersTests(TestCase):
+    """Проверка цвета тега и подбор цвета текста."""
+
+    def test_normalize_color(self):
+        self.assertEqual(normalize_color(" #FFAA00 "), "#ffaa00")
+
+        for bad in ("", "red", "#12345", "#1234567", "ffaa00", "#gggggg",
+                    "#ffaa00;}", "javascript:alert(1)"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    normalize_color(bad)
+
+    def test_text_color_is_readable(self):
+        self.assertEqual(text_color("#ffffff"), "#111827")
+        self.assertEqual(text_color("#ffee00"), "#111827")
+        self.assertEqual(text_color("#000000"), "#ffffff")
+        self.assertEqual(text_color("#3655d9"), "#ffffff")
+
+    def test_broken_color_falls_back_to_default(self):
+        self.assertEqual(color_class("не цвет"), color_class(TAG_COLOR_DEFAULT))
+        self.assertEqual(color_class("#FF0000"), "tag-c-ff0000")
+
+    def test_css_has_one_rule_per_color_and_the_default(self):
+        css = build_tag_css(["#ff0000", "#FF0000", "#00ff00"])
+
+        self.assertEqual(css.count("{"), 3)
+        self.assertIn(
+            ".tag-chip.tag-c-ff0000 { background: #ff0000; color: #ffffff; }",
+            css,
+        )
+        self.assertIn("tag-c-6b7280", css)
+
+    def test_css_skips_dangerous_values(self):
+        css = build_tag_css(["red;}body{display:none", "#00ff00"])
+
+        self.assertNotIn("body", css)
+        self.assertNotIn("display", css)
+        self.assertIn("tag-c-00ff00", css)
+
+
+class TagColorTests(BaseTestCase):
+    """Цвет тега в Кузне и таблица стилей tags.css."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        self.tag_type = TagType.objects.create(tag_type_name="Отделение")
+
+    def add_tag(self, **fields):
+        data = {
+            "action": "add_tag",
+            "tag-tag_type": self.tag_type.pk,
+            "tag-tag_name": "Очное",
+        }
+        data.update(fields)
+
+        return self.client.post(reverse("workshop"), data)
+
+    def test_new_tag_has_default_color(self):
+        tag = Tag.objects.create(tag_type=self.tag_type, tag_name="Очное")
+
+        self.assertEqual(tag.tag_color, TAG_COLOR_DEFAULT)
+        self.assertEqual(tag.full_name, "Отделение: Очное")
+
+    def test_form_has_color_picker_without_javascript(self):
+        page = self.client.get(reverse("workshop"))
+
+        self.assertContains(page, 'type="color"')
+        self.assertContains(page, "Цвет тега")
+        # Встроенных скриптов нет; подключён только внешний filter.js
+        # (предпросмотр цвета), выбор цвета работает и без него
+        self.assertNotContains(page, "<script>")
+
+    def test_tag_is_added_with_chosen_color(self):
+        response = self.add_tag(**{"tag-tag_color": "#FF0000"})
+
+        self.assertContains(response, "Запись добавлена.")
+        self.assertEqual(
+            Tag.objects.get(tag_name="Очное").tag_color, "#ff0000"
+        )
+
+    def test_tag_without_color_gets_default(self):
+        self.add_tag()
+
+        self.assertEqual(
+            Tag.objects.get(tag_name="Очное").tag_color, TAG_COLOR_DEFAULT
+        )
+
+    def test_bad_colors_are_rejected(self):
+        for bad in ("red", "#12345", "#gggggg", "#ff0000;}"):
+            with self.subTest(bad=bad):
+                response = self.add_tag(**{"tag-tag_color": bad})
+
+                self.assertContains(response, "Проверьте заполненные поля.")
+
+        self.assertFalse(Tag.objects.exists())
+
+    def test_color_can_be_changed(self):
+        tag = Tag.objects.create(tag_type=self.tag_type, tag_name="Очное")
+
+        response = self.client.post(reverse("workshop"), {
+            "action": "update_item",
+            "edit": "tag",
+            "item": tag.pk,
+            "tag-tag_type": self.tag_type.pk,
+            "tag-tag_name": "Очное",
+            "tag-tag_color": "#00AA55",
+        })
+
+        self.assertContains(response, "Изменения сохранены")
+        tag.refresh_from_db()
+        self.assertEqual(tag.tag_color, "#00aa55")
+
+    def test_tag_lists_show_type_and_name(self):
+        Tag.objects.create(tag_type=self.tag_type, tag_name="Очное")
+
+        page = self.client.get(reverse("workshop"))
+
+        self.assertContains(page, "Отделение: Очное")
+
+    # --- tags.css -------------------------------------------------------------
+
+    def test_stylesheet_has_rule_for_each_used_color(self):
+        Tag.objects.create(
+            tag_type=self.tag_type, tag_name="Очное", tag_color="#ffee00"
+        )
+        Tag.objects.create(
+            tag_type=self.tag_type, tag_name="Заочное", tag_color="#3655d9"
+        )
+
+        response = self.client.get(reverse("tag_styles"))
+        css = response.content.decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/css", response["Content-Type"])
+        self.assertEqual(response["Cache-Control"], "no-cache")
+        self.assertIn(
+            ".tag-chip.tag-c-ffee00 { background: #ffee00; color: #111827; }",
+            css,
+        )
+        self.assertIn(
+            ".tag-chip.tag-c-3655d9 { background: #3655d9; color: #ffffff; }",
+            css,
+        )
+
+    def test_stylesheet_ignores_broken_color_in_database(self):
+        Tag.objects.create(
+            tag_type=self.tag_type,
+            tag_name="Плохой",
+            tag_color="x;}body{display:none",
+        )
+
+        css = self.client.get(reverse("tag_styles")).content.decode()
+
+        self.assertNotIn("body", css)
+
+    def test_stylesheet_is_available_without_login_and_linked_in_pages(self):
+        page = self.client.get(reverse("groups"))
+        self.assertContains(page, reverse("tag_styles"))
+
+        self.client.logout()
+
+        self.assertEqual(self.client.get(reverse("tag_styles")).status_code, 200)
+        self.assertContains(self.client.get(reverse("login")), "/tags.css")
+
+
+class TagChipTests(BaseTestCase):
+    """Метка тега рядом с группой и преподавателем, полное имя при наведении."""
+
+    def setUp(self):
+        self.client.force_login(self.user)
+        tag_type = TagType.objects.create(tag_type_name="Отделение")
+        self.group_tag = Tag.objects.create(
+            tag_type=tag_type, tag_name="Очное", tag_color="#ff0000"
+        )
+        self.teacher_tag = Tag.objects.create(
+            tag_type=tag_type, tag_name="Высшая", tag_color="#00aa55"
+        )
+
+    def test_group_tag_on_groups_page(self):
+        self.group.group_tag = self.group_tag
+        self.group.save()
+
+        with fake_today(MONDAY):
+            page = self.client.get(reverse("groups"))
+
+        self.assertContains(page, 'class="tag-chip tag-c-ff0000"')
+        self.assertContains(page, 'title="Отделение: Очное"')
+        self.assertContains(page, ">Очное</span>")
+
+    def test_group_tag_on_group_schedule_page(self):
+        self.group.group_tag = self.group_tag
+        self.group.save()
+
+        page = self.client.get(
+            reverse("group_schedule", args=[self.group.pk]),
+            {"date": "2026-10-19"},
+        )
+
+        self.assertContains(page, 'class="tag-chip tag-c-ff0000"')
+        self.assertContains(page, 'title="Отделение: Очное"')
+
+    def test_teacher_tag_next_to_teacher(self):
+        self.teacher.teacher_tag = self.teacher_tag
+        self.teacher.save()
+
+        with fake_today(MONDAY):
+            page = self.client.get(
+                reverse("teachers"), {"teacher": self.teacher.pk}
+            )
+
+        self.assertContains(page, 'class="tag-chip tag-c-00aa55"')
+        self.assertContains(page, 'title="Отделение: Высшая"')
+
+    def test_no_chip_without_tag(self):
+        with fake_today(MONDAY):
+            groups = self.client.get(reverse("groups"))
+            teachers = self.client.get(
+                reverse("teachers"), {"teacher": self.teacher.pk}
+            )
+
+        self.assertNotContains(groups, 'class="tag-chip')
+        self.assertNotContains(teachers, 'class="tag-chip')
+
+    def test_tags_do_not_add_queries_per_group(self):
+        def count_queries():
+            with fake_today(MONDAY):
+                with CaptureQueriesContext(connection) as ctx:
+                    self.client.get(reverse("groups"))
+            return len(ctx)
+
+        for number in range(2):
+            Group.objects.create(
+                group_name=f"К-{number}",
+                group_course=self.course,
+                shift=self.shift,
+                group_tag=self.group_tag,
+            )
+        few = count_queries()
+
+        for number in range(2, 5):
+            Group.objects.create(
+                group_name=f"К-{number}",
+                group_course=self.course,
+                shift=self.shift,
+                group_tag=self.group_tag,
+            )
+
+        self.assertEqual(count_queries(), few)
+
+
+class TeacherTagAssignTests(BaseTestCase):
+    """Тег преподавателя ставится на странице «Пользователи»."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        tag_type = TagType.objects.create(tag_type_name="Отделение")
+        self.tag = Tag.objects.create(tag_type=tag_type, tag_name="Высшая")
+        self.teacher_user = get_user_model().objects.get(
+            username="teacherivanov@gmail.com"
+        )
+
+    def post_tag(self, user, tag):
+        return self.client.post(reverse("users"), {
+            "action": "set_teacher_tag",
+            "user_id": user.pk,
+            "tag": tag,
+        }, follow=True)
+
+    def test_teacher_gets_and_loses_tag(self):
+        response = self.post_tag(self.teacher_user, self.tag.pk)
+
+        self.assertContains(response, "тег Отделение: Высшая")
+        self.teacher.refresh_from_db()
+        self.assertEqual(self.teacher.teacher_tag_id, self.tag.pk)
+
+        self.post_tag(self.teacher_user, "")
+        self.teacher.refresh_from_db()
+        self.assertIsNone(self.teacher.teacher_tag_id)
+
+    def test_only_teachers_have_tags(self):
+        response = self.post_tag(self.user, self.tag.pk)
+
+        self.assertContains(response, "только преподавателям")
+
+    def test_unknown_tag_is_rejected(self):
+        response = self.post_tag(self.teacher_user, 9999)
+
+        self.assertContains(response, "Выберите тег из списка.")
+        self.teacher.refresh_from_db()
+        self.assertIsNone(self.teacher.teacher_tag_id)
+
+    def test_tag_select_is_shown_for_teachers_only(self):
+        page = self.client.get(reverse("users"))
+
+        self.assertContains(page, 'value="set_teacher_tag"')
+        self.assertEqual(
+            page.content.decode().count('value="set_teacher_tag"'), 1
+        )
+        self.assertContains(page, "Отделение: Высшая")
+
+    def test_non_staff_cannot_set_tag(self):
+        self.client.force_login(self.user)
+
+        response = self.post_tag(self.teacher_user, self.tag.pk)
+
+        self.assertEqual(response.status_code, 403)
+
+
+class MainPageTests(BaseTestCase):
+    """Главная страница: слово RASPISITE, надпись ЕКЕБ и 12 звёзд по кругу."""
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+    def test_title_subtitle_and_twelve_stars(self):
+        response = self.client.get(reverse("home"))
+        html = response.content.decode()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "mainpage.html")
+        self.assertIn('class="hero-title" aria-label="RASPISITE"', html)
+        self.assertIn('<p class="hero-sub">ЕКЕБ</p>', html)
+        self.assertEqual(html.count('class="star"'), 12)
+
+    def test_stars_are_arranged_in_a_circle(self):
+        html = self.client.get(reverse("home")).content.decode()
+
+        points = re.findall(r'class="star" href="#star" transform="translate\(([-\d.]+) ([-\d.]+)\)"', html)
+        radii = {round((float(x) ** 2 + float(y) ** 2) ** 0.5) for x, y in points}
+
+        self.assertEqual(len(points), 12)
+        self.assertEqual(len(radii), 1)
+
+    def test_no_script_and_no_advantages_list(self):
+        html = self.client.get(reverse("home")).content.decode()
+
+        self.assertNotIn("<script", html)
+        self.assertNotIn("<ul", html)
+        self.assertNotIn("преимущ", html.lower())
+
+    def test_page_requires_login(self):
+        self.client.logout()
+
+        self.assertEqual(self.client.get(reverse("home")).status_code, 302)
 
 
 class CuratorChoiceTests(BaseTestCase):
@@ -3274,3 +3630,731 @@ class CsvTests(BaseTestCase):
         )
 
         self.assertEqual(response.context["import_kind"], "groups")
+
+
+class CsrfFailureTests(TestCase):
+    """Устаревшая форма: понятная страница и свои имена cookie."""
+
+    EMAIL = "csrfcheck77@gmail.com"
+
+    def setUp(self):
+        cache.clear()
+        get_user_model().objects.create_user(self.EMAIL, password=PASSWORD)
+        # Клиент, который проверяет CSRF-токен так же, как браузер.
+        self.client = Client(enforce_csrf_checks=True)
+
+    def tearDown(self):
+        cache.clear()
+
+    def post_without_token(self, **extra):
+        return self.client.post(
+            reverse("login"),
+            {"username": self.EMAIL, "password": PASSWORD},
+            **extra,
+        )
+
+    def test_cookie_names_are_own(self):
+        self.assertEqual(settings.CSRF_COOKIE_NAME, "raspisite_csrftoken")
+        self.assertEqual(settings.SESSION_COOKIE_NAME, "raspisite_sessionid")
+
+        self.client.get(reverse("login"))
+
+        self.assertIn("raspisite_csrftoken", self.client.cookies)
+        self.assertNotIn("csrftoken", self.client.cookies)
+
+    def test_failure_shows_friendly_page(self):
+        response = self.post_without_token()
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTemplateUsed(response, "csrf_failed.html")
+        self.assertContains(response, "Форма устарела", status_code=403)
+        self.assertNotContains(
+            response, "CSRF token", status_code=403
+        )
+
+    def test_failure_does_not_log_in(self):
+        self.post_without_token()
+
+        self.assertNotIn("_auth_user_id", self.client.session)
+
+    def test_back_link_goes_to_same_site_page(self):
+        response = self.post_without_token(
+            HTTP_REFERER="http://testserver/login/"
+        )
+
+        self.assertEqual(
+            response.context["back_url"], "http://testserver/login/"
+        )
+
+    def test_back_link_ignores_foreign_site(self):
+        response = self.post_without_token(
+            HTTP_REFERER="http://evil.example/steal/"
+        )
+
+        self.assertEqual(response.context["back_url"], reverse("home"))
+
+    def test_back_link_without_referer_goes_home(self):
+        response = self.post_without_token()
+
+        self.assertEqual(response.context["back_url"], reverse("home"))
+
+    def test_valid_token_still_works(self):
+        self.client.get(reverse("login"))
+        token = self.client.cookies[settings.CSRF_COOKIE_NAME].value
+
+        response = self.client.post(
+            reverse("login"),
+            {
+                "username": self.EMAIL,
+                "password": PASSWORD,
+                "csrfmiddlewaretoken": token,
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("_auth_user_id", self.client.session)
+
+
+class ScheduleOverviewTests(BaseTestCase):
+    """Общее расписание: группы по строкам, дни по столбцам."""
+
+    def add_group(self, name, shift=None, subject=None, weekday=1, number=1):
+        group = Group.objects.create(
+            group_name=name,
+            group_course=self.course,
+            shift=shift or self.shift,
+        )
+
+        if subject:
+            pair = Pair.objects.create(
+                group=group, teacher=self.teacher, pair_name=subject
+            )
+            Day.objects.create(
+                group=group,
+                pair=pair,
+                pair_number=number,
+                weekday=Weekday.objects.get(pk=weekday),
+            )
+
+        return group
+
+    def open(self, **params):
+        self.client.force_login(self.admin)
+
+        return self.client.get(reverse("overview"), params)
+
+    def test_staff_only(self):
+        url = reverse("overview")
+
+        self.assertRedirects(
+            self.client.get(url), f"{reverse('login')}?next={url}"
+        )
+
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(url).status_code, 403)
+
+        self.client.force_login(self.admin)
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "overview.html")
+
+    def test_card_is_in_workshop_under_tags(self):
+        self.client.force_login(self.admin)
+
+        html = self.client.get(reverse("workshop")).content.decode()
+
+        self.assertLess(
+            html.index("<h2>Типы тегов</h2>"),
+            html.index("<h2>Общее расписание</h2>"),
+        )
+        self.assertIn(f'href="{reverse("overview")}"', html)
+
+    def test_columns_are_six_days(self):
+        response = self.open()
+
+        self.assertEqual(
+            [column["name"] for column in response.context["columns"]],
+            ["Понедельник", "Вторник", "Среда",
+             "Четверг", "Пятница", "Суббота"],
+        )
+
+        for row in response.context["rows"]:
+            self.assertEqual(len(row["cells"]), 6)
+
+    def test_pairs_are_in_the_right_cell(self):
+        self.add_group("Б-02", subject="Физика", weekday=3, number=2)
+
+        rows = {
+            row["group"].group_name: row
+            for row in self.open().context["rows"]
+        }
+
+        monday = rows["А-01"]["cells"][0]["lessons"]
+        self.assertEqual(
+            [(item["number"], item["name"]) for item in monday],
+            [(1, "Математика")],
+        )
+
+        wednesday = rows["Б-02"]["cells"][2]["lessons"]
+        self.assertEqual(
+            [(item["number"], item["name"]) for item in wednesday],
+            [(2, "Физика")],
+        )
+        self.assertEqual(rows["Б-02"]["cells"][0]["lessons"], [])
+
+    def test_pairs_are_sorted_by_number(self):
+        group = self.add_group("Б-02", subject="Физика", number=3)
+        pair = Pair.objects.create(
+            group=group, teacher=self.teacher, pair_name="Химия"
+        )
+        Day.objects.create(
+            group=group, pair=pair, pair_number=1,
+            weekday=Weekday.objects.get(pk=1),
+        )
+
+        rows = {
+            row["group"].group_name: row
+            for row in self.open().context["rows"]
+        }
+
+        self.assertEqual(
+            [item["number"] for item in rows["Б-02"]["cells"][0]["lessons"]],
+            [1, 3],
+        )
+
+    def test_checkerboard(self):
+        self.add_group("Б-02")
+        self.add_group("В-03")
+
+        rows = self.open().context["rows"]
+        tones = [[cell["tone"] for cell in row["cells"]] for row in rows]
+
+        self.assertEqual(len(tones), 3)
+
+        for row_index, row in enumerate(tones):
+            for column_index, tone in enumerate(row):
+                self.assertEqual(tone, (row_index + column_index) % 2)
+
+                # Соседи по строке и по столбцу всегда другого тона
+                if column_index:
+                    self.assertNotEqual(tone, row[column_index - 1])
+
+                if row_index:
+                    self.assertNotEqual(tone, tones[row_index - 1][column_index])
+
+    def test_cells_lead_to_group_editor(self):
+        html = self.open().content.decode()
+
+        edit_url = reverse("group_edit", args=[self.group.group_id])
+
+        self.assertEqual(html.count(f'href="{edit_url}"'), 6)
+        self.assertContains(
+            self.open(),
+            reverse("group_schedule", args=[self.group.group_id]),
+        )
+
+    def test_empty_cell_is_marked(self):
+        self.add_group("Б-02")
+
+        self.assertContains(self.open(), 'class="overview-empty"')
+
+    def test_shift_filter(self):
+        shift2 = Shift.objects.create(shift_id=2)
+        self.add_group("Б-02", shift=shift2)
+
+        def names(**params):
+            return [
+                row["group"].group_name
+                for row in self.open(**params).context["rows"]
+            ]
+
+        self.assertEqual(names(), ["А-01", "Б-02"])
+        self.assertEqual(names(shift="2"), ["Б-02"])
+        self.assertEqual(names(shift="1"), ["А-01"])
+
+        # Неверное значение смены не ломает страницу
+        self.assertEqual(names(shift="abc"), ["А-01", "Б-02"])
+        self.assertEqual(names(shift="99"), ["А-01", "Б-02"])
+
+    def test_no_groups_message(self):
+        Group.objects.all().delete()
+
+        response = self.open()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Групп пока нет")
+
+    def test_query_count_does_not_grow_with_groups(self):
+        self.client.force_login(self.admin)
+
+        with CaptureQueriesContext(connection) as few:
+            self.client.get(reverse("overview"))
+
+        for index in range(5):
+            self.add_group(f"Г-{index}", subject=f"Предмет {index}")
+
+        with CaptureQueriesContext(connection) as many:
+            self.client.get(reverse("overview"))
+
+        self.assertEqual(len(many), len(few))
+
+    def test_one_off_changes_are_not_shown(self):
+        ScheduleChange.objects.create(
+            calendar=Calendar.objects.create(date=MONDAY, weekday=1),
+            pair=self.pair,
+            old_pair_number=1,
+            change_type="CANCEL",
+        )
+
+        monday = self.open().context["rows"][0]["cells"][0]["lessons"]
+
+        self.assertEqual([item["name"] for item in monday], ["Математика"])
+
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def header_of(response):
+    """Блок заголовка страницы (между <header ...page-head> и </header>)."""
+    html = response.content.decode()
+    match = re.search(
+        r'<header class="daily-header page-head">.*?</header>', html, re.S
+    )
+
+    assert match, "на странице нет блока заголовка"
+
+    return match.group(0)
+
+
+class PageHeaderTests(BaseTestCase):
+    """Единый блок заголовка: слева название, справа действия."""
+
+    def open(self, name, args=None, params=None, admin=True):
+        self.client.force_login(self.admin if admin else self.user)
+
+        with fake_today(MONDAY):
+            return self.client.get(reverse(name, args=args), params or {})
+
+    def test_every_page_has_header_block_with_title(self):
+        group = [self.group.pk]
+        pages = [
+            ("calendar", None, "КАЛЕНДАРЬ"),
+            ("groups", None, "ГРУППЫ"),
+            ("teachers", None, "ПРЕПОДАВАТЕЛИ"),
+            ("users", None, "ПОЛЬЗОВАТЕЛИ"),
+            ("workshop", None, "КУЗНЯ"),
+            ("overview", None, "ОБЩЕЕ РАСПИСАНИЕ"),
+            ("group_schedule", group, "РАСПИСАНИЕ"),
+            ("group_edit", group, "РЕДАКТОР РАСПИСАНИЯ"),
+        ]
+
+        for name, args, title in pages:
+            with self.subTest(page=name):
+                response = self.open(name, args)
+
+                self.assertContains(response, f"<h1>{title}</h1>", count=1)
+                self.assertIn(f"<h1>{title}</h1>", header_of(response))
+                self.assertNotContains(response, "schedule-header")
+
+    def test_title_is_in_the_left_part_and_actions_on_the_right(self):
+        group = [self.group.pk]
+
+        for name, args in (
+            ("calendar", None),
+            ("groups", None),
+            ("teachers", None),
+            ("overview", None),
+            ("group_schedule", group),
+            ("group_edit", group),
+        ):
+            with self.subTest(page=name):
+                head = header_of(self.open(name, args))
+
+                self.assertLess(
+                    head.index('class="page-head-title"'),
+                    head.index('class="page-head-actions"'),
+                )
+                self.assertLess(
+                    head.index("<h1>"), head.index('class="page-head-actions"')
+                )
+
+    def test_caption_shows_context_above_the_static_title(self):
+        head = header_of(
+            self.open("group_schedule", [self.group.pk])
+        )
+
+        self.assertLess(
+            head.index(self.group.group_name),
+            head.index("<h1>РАСПИСАНИЕ</h1>"),
+        )
+
+        head = header_of(
+            self.open("teachers", params={"teacher": self.teacher.pk})
+        )
+
+        self.assertLess(
+            head.index(self.teacher.teacher_name),
+            head.index("<h1>ПРЕПОДАВАТЕЛИ</h1>"),
+        )
+
+    def test_group_page_buttons_are_in_actions_for_admin_only(self):
+        args = [self.group.pk]
+
+        admin_head = header_of(self.open("group_schedule", args))
+        student_head = header_of(
+            self.open("group_schedule", args, admin=False)
+        )
+
+        actions = admin_head[admin_head.index("page-head-actions"):]
+
+        self.assertIn("Правки на даты", actions)
+        self.assertIn("Редактировать", actions)
+        self.assertNotIn("Правки на даты", student_head)
+        self.assertNotIn("Редактировать", student_head)
+
+    def test_workshop_header_keeps_daily_header_class(self):
+        """Правило «Не трогать» в CSS привязано к .daily-header в Кузне."""
+        response = self.open("workshop")
+
+        self.assertContains(response, 'id="workshop-page"')
+        self.assertContains(response, 'class="daily-header page-head"')
+
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn("/* Не трогать */", css)
+        self.assertIn("#workshop-page .daily-header", css)
+
+
+class TeacherSearchTests(BaseTestCase):
+    """Поиск преподавателя на странице «Преподаватели»."""
+
+    def open(self, **params):
+        self.client.force_login(self.user)
+
+        with fake_today(MONDAY):
+            return self.client.get(reverse("teachers"), params)
+
+    def test_script_is_connected(self):
+        self.assertContains(self.open(), "filter.js")
+
+    def test_search_field_replaces_the_teacher_selector(self):
+        response = self.open()
+
+        self.assertContains(response, "data-filter-input")
+        self.assertNotContains(response, '<select id="teacher"')
+
+    def test_every_teacher_is_a_link_including_old_records(self):
+        old = Teacher.objects.create(teacher_name="Старый Преподаватель")
+        html = self.open().content.decode()
+
+        for teacher in (self.teacher, old):
+            self.assertIn(f'href="?teacher={teacher.pk}"', html)
+
+        self.assertIn('data-filter-text="Старый Преподаватель"', html)
+
+    def test_links_keep_date_and_shift(self):
+        html = self.open(
+            date="2026-10-19", shift=self.shift.pk
+        ).content.decode()
+
+        self.assertIn(
+            f'href="?teacher={self.teacher.pk}&amp;date=2026-10-19'
+            f'&amp;shift={self.shift.pk}"',
+            html,
+        )
+
+    def test_only_selected_teacher_is_marked(self):
+        Teacher.objects.create(teacher_name="Другой Преподаватель")
+        response = self.open(teacher=self.teacher.pk)
+
+        self.assertContains(
+            response, 'class="teacher-result is-selected"', count=1
+        )
+
+    def test_empty_message_is_hidden_while_there_are_teachers(self):
+        html = self.open().content.decode()
+        match = re.search(r'<li class="teacher-empty"[^>]*>', html)
+
+        self.assertIsNotNone(match)
+        self.assertIn("hidden", match.group(0))
+
+    def test_query_count_does_not_grow_with_teachers(self):
+        with CaptureQueriesContext(connection) as few:
+            self.open()
+
+        tag = Tag.objects.create(
+            tag_type=TagType.objects.create(tag_type_name="Категория"),
+            tag_name="Высшая",
+        )
+
+        for index in range(5):
+            Teacher.objects.create(
+                teacher_name=f"Преподаватель {index}", teacher_tag=tag
+            )
+
+        with CaptureQueriesContext(connection) as many:
+            self.open()
+
+        self.assertEqual(len(many), len(few))
+
+
+class FilterScriptTests(TestCase):
+    """Файл static/filter.js и его согласованность с серверным кодом."""
+
+    def script(self):
+        return (STATIC_DIR / "filter.js").read_text(encoding="utf-8")
+
+    def test_script_has_the_hooks_used_by_templates(self):
+        script = self.script()
+
+        for hook in (
+            "data-filter",
+            "data-filter-input",
+            "data-filter-item",
+            "data-filter-text",
+            "data-filter-empty",
+            "data-tag-preview",
+            "data-tag-preview-chip",
+        ):
+            with self.subTest(hook=hook):
+                self.assertIn(hook, script)
+
+    def test_text_color_rule_matches_python(self):
+        """Предпросмотр считает цвет текста так же, как tags.text_color."""
+        script = self.script()
+
+        self.assertIn("299 * red + 587 * green + 114 * blue", script)
+        self.assertIn("> 140", script)
+        self.assertIn('"#111827"', script)
+        self.assertIn('"#ffffff"', script)
+        self.assertEqual(text_color("#ffffff"), "#111827")
+        self.assertEqual(text_color("#000000"), "#ffffff")
+
+
+class TagPreviewTests(BaseTestCase):
+    """Предпросмотр метки тега в форме Кузни."""
+
+    MARK = 'data-tag-preview hidden'
+
+    def open(self, **params):
+        self.client.force_login(self.admin)
+
+        return self.client.get(reverse("workshop"), params)
+
+    def test_add_form_has_preview_after_the_color_field(self):
+        html = self.open().content.decode()
+
+        self.assertEqual(html.count(self.MARK), 1)
+        self.assertLess(
+            html.index('name="tag-tag_color"'), html.index(self.MARK)
+        )
+
+    def test_edit_form_has_preview(self):
+        tag = Tag.objects.create(
+            tag_type=TagType.objects.create(tag_type_name="Категория"),
+            tag_name="Высшая",
+        )
+
+        html = self.open(edit="tag", item=tag.pk).content.decode()
+
+        self.assertEqual(html.count(self.MARK), 1)
+        self.assertLess(
+            html.index('name="tag-tag_color"'), html.index(self.MARK)
+        )
+
+    def test_no_preview_before_a_tag_is_chosen_for_editing(self):
+        html = self.open(edit="tag").content.decode()
+
+        self.assertEqual(html.count(self.MARK), 0)
+
+    def test_other_cards_have_no_preview(self):
+        html = self.open(edit="group").content.decode()
+
+        # Только форма добавления тега
+        self.assertEqual(html.count(self.MARK), 1)
+
+
+class TeacherShiftButtonsTests(BaseTestCase):
+    """Кнопки «Все смены / 1 смена / 2 смена» на странице преподавателей."""
+
+    def setUp(self):
+        Shift.objects.create(shift_id=2)
+
+    def open(self, **params):
+        self.client.force_login(self.user)
+
+        with fake_today(MONDAY):
+            return self.client.get(reverse("teachers"), params)
+
+    def selected(self, response):
+        return [link["selected"] for link in response.context["shift_links"]]
+
+    def test_all_shifts_and_each_shift_get_a_button(self):
+        response = self.open()
+        links = response.context["shift_links"]
+
+        self.assertEqual(
+            [link["label"] for link in links],
+            ["Все смены", "1 смена", "2 смена"],
+        )
+        self.assertEqual(self.selected(response), [True, False, False])
+        self.assertNotContains(response, '<select id="shift"')
+
+    def test_selected_shift_is_marked(self):
+        response = self.open(shift=2)
+
+        self.assertEqual(self.selected(response), [False, False, True])
+        self.assertContains(
+            response, 'class="shift-button is-selected"', count=1
+        )
+
+    def test_unknown_shift_means_all_shifts(self):
+        self.assertEqual(self.selected(self.open(shift=99)), [True, False, False])
+        self.assertEqual(self.selected(self.open(shift="abc")), [True, False, False])
+
+    def test_links_keep_teacher_and_date(self):
+        response = self.open(
+            teacher=self.teacher.pk, date="2026-10-19", shift=2
+        )
+        base = f"{reverse('teachers')}?teacher={self.teacher.pk}&date=2026-10-19"
+        urls = [link["url"] for link in response.context["shift_links"]]
+
+        self.assertEqual(urls, [base, f"{base}&shift=1", f"{base}&shift=2"])
+
+    def test_date_is_not_added_when_it_was_not_requested(self):
+        urls = [
+            link["url"] for link in self.open().context["shift_links"]
+        ]
+        base = f"{reverse('teachers')}?teacher={self.teacher.pk}"
+
+        self.assertEqual(urls, [base, f"{base}&shift=1", f"{base}&shift=2"])
+
+    def test_shift_does_not_change_the_teacher_list(self):
+        Teacher.objects.create(teacher_name="Другой Преподаватель")
+
+        every = self.open().context["teachers"]
+        second = self.open(shift=2).context["teachers"]
+
+        self.assertEqual(len(every), 2)
+        self.assertEqual(
+            [teacher.pk for teacher in second],
+            [teacher.pk for teacher in every],
+        )
+
+    def test_shift_limits_only_the_shown_pairs(self):
+        def monday_lessons(response):
+            day = response.context["schedule_days"][0]
+
+            return day["pairs"][0]["lessons"]
+
+        self.assertEqual(len(monday_lessons(self.open())), 1)
+        self.assertEqual(len(monday_lessons(self.open(shift=1))), 1)
+        self.assertEqual(len(monday_lessons(self.open(shift=2))), 0)
+
+    def test_teacher_links_keep_the_chosen_shift(self):
+        html = self.open(shift=2).content.decode()
+
+        self.assertIn(
+            f'href="?teacher={self.teacher.pk}&amp;shift=2"', html
+        )
+
+
+class EmptyCellTests(BaseTestCase):
+    """Пустые клетки таблиц — пустые, а не с тире; подписи в списках остались."""
+
+    LONELY_DASH = re.compile(r">\s*—\s*<")
+
+    def page(self, name, args=None, params=None):
+        self.client.force_login(self.admin)
+
+        with fake_today(MONDAY):
+            return self.client.get(reverse(name, args=args), params or {})
+
+    def test_no_lonely_dashes_in_tables(self):
+        group = [self.group.pk]
+
+        for name, args in (
+            ("groups", None),
+            ("group_schedule", group),
+            ("teachers", None),
+            ("group_edit", group),
+            ("overview", None),
+            ("users", None),
+        ):
+            with self.subTest(page=name):
+                html = self.page(name, args).content.decode()
+
+                self.assertIsNone(self.LONELY_DASH.search(html))
+
+    def test_empty_slots_are_non_breaking_spaces(self):
+        for name, args in (
+            ("groups", None),
+            ("group_schedule", [self.group.pk]),
+            ("teachers", None),
+        ):
+            with self.subTest(page=name):
+                self.assertContains(self.page(name, args), "&nbsp;")
+
+    def test_user_without_name_has_blank_name_cell(self):
+        html = self.page("users").content.decode()
+
+        self.assertIn('<span class="users-hint">&nbsp;</span>', html)
+
+    def test_dropdown_placeholders_keep_their_dashes(self):
+        self.assertContains(
+            self.page("group_edit", [self.group.pk]), "— нет пары —"
+        )
+        self.assertContains(self.page("users"), "— не назначена —")
+        self.assertContains(self.page("workshop"), "— Выберите —")
+
+
+class MainPageChoiceTests(BaseTestCase):
+    """Главная: выбор между расписанием и дневником."""
+
+    def open(self, user=None):
+        self.client.force_login(user or self.user)
+
+        return self.client.get(reverse("home"))
+
+    def test_schedule_and_diary_are_offered(self):
+        html = self.open().content.decode()
+
+        self.assertIn('class="hero-choice"', html)
+        self.assertIn("Расписание", html)
+        self.assertIn("Дневник", html)
+
+    def test_diary_is_not_a_link_yet(self):
+        html = self.open().content.decode()
+
+        self.assertIn('<span class="hero-choice-link is-soon"', html)
+        self.assertNotIn('<a class="hero-choice-link is-soon"', html)
+        self.assertIn('title="Дневник появится позже"', html)
+
+    def schedule_link(self):
+        html = self.open().content.decode()
+        match = re.search(
+            r'<a class="hero-choice-link"\s+href="([^"]+)"', html
+        )
+
+        self.assertIsNotNone(match)
+
+        return match.group(1)
+
+    def test_schedule_leads_to_groups_without_a_group(self):
+        self.assertEqual(self.schedule_link(), reverse("groups"))
+
+    def test_schedule_leads_to_the_students_own_group(self):
+        set_group(self.user, self.group)
+
+        self.assertEqual(
+            self.schedule_link(),
+            reverse("group_schedule", args=[self.group.pk]),
+        )
+
+    def test_script_is_only_on_other_pages(self):
+        self.assertNotContains(self.open(), "filter.js")
+
+        page = self.client.get(reverse("groups"))
+
+        self.assertContains(page, "filter.js")

@@ -8,6 +8,9 @@
 
     {% load static %}
     <link rel="stylesheet" href="{% static 'style.css' %}">
+    <link rel="stylesheet" href="{% url 'tag_styles' %}">
+    {% block scripts %}<script src="{% static 'filter.js' %}" defer></script>{% endblock %}
+    {% block head %}{% endblock %}
 </head>
 
 <body>

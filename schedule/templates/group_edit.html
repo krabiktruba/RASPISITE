@@ -3,21 +3,21 @@
 {% block content %}
 <div class="daily-page">
 
-    <header class="daily-header">
-        <div class="daily-heading">
-            <h1>РЕДАКТОР РАСПИСАНИЯ</h1>
-            <p class="daily-subtitle">
-                {{ group.group_name }}
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">{{ group.group_name }}
                 <span class="daily-meta">
                     {{ group.group_course }} · {{ group.shift }}
-                </span>
-            </p>
+                </span></p>
+            <h1>РЕДАКТОР РАСПИСАНИЯ</h1>
         </div>
 
-        <a class="date-nav-link"
-           href="{% url 'group_schedule' group_id=group.group_id %}">
-            ← К расписанию
-        </a>
+        <div class="page-head-actions">
+            <a class="date-nav-link"
+               href="{% url 'group_schedule' group_id=group.group_id %}">
+                ← К расписанию
+            </a>
+        </div>
     </header>
 
     {% if errors %}
@@ -57,7 +57,7 @@
                                         {% if row.time %}
                                             {{ row.time.pair_start_time|time:"H:i" }}–{{ row.time.pair_end_time|time:"H:i" }}
                                         {% else %}
-                                            —
+                                            &nbsp;
                                         {% endif %}
                                     </div>
 

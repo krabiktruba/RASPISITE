@@ -12,6 +12,7 @@
                    value="{{ selected_time_mode }}">
 
             {{ card.form.as_p }}
+            {% if card.key == "tag" %}{% include "tag_preview.html" %}{% endif %}
 
             <button class="workshop-button" type="submit"
                     name="action" value="{{ card.add_action }}">
@@ -80,6 +81,7 @@
                 {% else %}
 
                     {{ card.form.as_p }}
+                    {% if card.key == "tag" %}{% include "tag_preview.html" %}{% endif %}
 
                     {% if card.key == "pair" %}
                         <p class="workshop-hint">

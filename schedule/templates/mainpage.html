@@ -1,16 +1,61 @@
 {% extends "main.html" %}
 
+{% block head %}
+    <!-- Шрифт для заглавного слова; без сети страница возьмёт запасной -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&amp;display=swap">
+{% endblock %}
+
+{# Главной скрипты не нужны #}
+{% block scripts %}{% endblock %}
+
 {% block content %}
-<div class="daily-page">
+<section class="hero">
 
-    <header class="daily-header">
-        <div class="daily-heading">
-            <h1>RASPISITE</h1>
-            <p class="daily-subtitle">Главная страница</p>
+    <div class="hero-ring">
+
+        <!-- 12 звёзд по кругу -->
+        <svg class="hero-stars" viewBox="-300 -300 600 600"
+             aria-hidden="true" focusable="false">
+            <defs>
+                <polygon id="star" points="0.00,-28.00 6.58,-9.06 26.63,-8.65 10.65,3.46 16.46,22.65 0.00,11.20 -16.46,22.65 -10.65,3.46 -26.63,-8.65 -6.58,-9.06"/>
+            </defs>
+            <use class="star" href="#star" transform="translate(0.00 -246.00)"/>
+            <use class="star" href="#star" transform="translate(123.00 -213.04)"/>
+            <use class="star" href="#star" transform="translate(213.04 -123.00)"/>
+            <use class="star" href="#star" transform="translate(246.00 0.00)"/>
+            <use class="star" href="#star" transform="translate(213.04 123.00)"/>
+            <use class="star" href="#star" transform="translate(123.00 213.04)"/>
+            <use class="star" href="#star" transform="translate(0.00 246.00)"/>
+            <use class="star" href="#star" transform="translate(-123.00 213.04)"/>
+            <use class="star" href="#star" transform="translate(-213.04 123.00)"/>
+            <use class="star" href="#star" transform="translate(-246.00 0.00)"/>
+            <use class="star" href="#star" transform="translate(-213.04 -123.00)"/>
+            <use class="star" href="#star" transform="translate(-123.00 -213.04)"/>
+        </svg>
+
+        <div class="hero-text">
+            <h1 class="hero-title" aria-label="RASPISITE"><span>R</span><span>A</span><span>S</span><span>P</span><span>I</span><span>S</span><span>I</span><span>T</span><span>E</span></h1>
+            <p class="hero-sub">ЕКЕБ</p>
+
+            <!-- Выбор раздела. «Дневник» появится позже, пока это пометка -->
+            <nav class="hero-choice" aria-label="Что открыть">
+                <a class="hero-choice-link"
+                   href="{% if my_group_id %}{% url 'group_schedule' group_id=my_group_id %}{% else %}{% url 'groups' %}{% endif %}">
+                    <span class="hero-choice-name">Расписание</span>
+                    <span class="hero-choice-note">пары и календарь</span>
+                </a>
+
+                <span class="hero-choice-link is-soon" aria-disabled="true"
+                      title="Дневник появится позже">
+                    <span class="hero-choice-name">Дневник</span>
+                    <span class="hero-choice-note">оценки · скоро</span>
+                </span>
+            </nav>
         </div>
-    </header>
 
-    <!-- Заготовка: содержимое главной страницы будет добавлено позже -->
+    </div>
 
-</div>
+</section>
 {% endblock %}

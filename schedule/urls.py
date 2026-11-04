@@ -13,6 +13,13 @@ urlpatterns = [
         name="home",
     ),
 
+    # Цвета тегов (таблица стилей для меток)
+    path(
+        "tags.css",
+        views.tag_styles,
+        name="tag_styles",
+    ),
+
     # Авторизация
     path(
         "login/",
@@ -71,6 +78,11 @@ urlpatterns = [
         "workshop/export/",
         views.workshop_export,
         name="workshop_export",
+    ),
+    path(
+        "workshop/overview/",
+        views.schedule_overview,
+        name="overview",
     ),
     path(
         "workshop/",

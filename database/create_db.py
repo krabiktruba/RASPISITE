@@ -23,6 +23,7 @@ TABLES_SQL = [
         tag_id SERIAL PRIMARY KEY,
         tag_type INT NOT NULL,
         tag_name VARCHAR(100) NOT NULL,
+        tag_color VARCHAR(7) NOT NULL DEFAULT '#6b7280',
 
         FOREIGN KEY (tag_type)
             REFERENCES "TagType"(tag_type_id),

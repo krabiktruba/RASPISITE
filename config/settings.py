@@ -129,6 +129,17 @@ LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'groups'
 LOGOUT_REDIRECT_URL = 'login'
 
+# Cookie с токеном формы и сессией у проекта свои. Cookie браузера общие для
+# всех портов одного адреса (localhost), и другой Django-проект на localhost
+# затирал стандартный «csrftoken»: форма отправлялась с чужим токеном, и
+# Django отвечал ошибкой 403 «CSRF token from POST incorrect».
+SESSION_COOKIE_NAME = 'raspisite_sessionid'
+CSRF_COOKIE_NAME = 'raspisite_csrftoken'
+
+# Если форма всё же устарела (кнопка «Назад», две вкладки, долго открытая
+# страница), показывается понятная страница, а не жёлтая страница отладки.
+CSRF_FAILURE_VIEW = 'schedule.views.csrf_failed'
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration

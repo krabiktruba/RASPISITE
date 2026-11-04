@@ -758,6 +758,7 @@ body {
 #workshop-page .workshop-card .workshop-hint {
     display: block;
     margin: 0 0 8px;
+    margin-top: 8px;
     color: #6b7280;
     font-size: 13px;
     line-height: 1.4;
@@ -931,6 +932,7 @@ body {
         max-height: 180px;
     }
 }
+
 
 /* ------------------------------------------------------------------ */
 /* Авторизация                                                         */
@@ -1864,5 +1866,758 @@ body {
     .pair.has-actions .pair-actions {
         grid-column: 1 / 3;
         justify-content: flex-start;
+    }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Теги: цветная метка рядом с группой или преподавателем              */
+/* ------------------------------------------------------------------ */
+
+/* Цвет и цвет текста задаёт таблица стилей tags.css (класс tag-c-RRGGBB) */
+.tag-chip {
+    display: inline-block;
+    max-width: 170px;
+    margin-left: 10px;
+    padding: 2px 11px;
+
+    border-radius: 999px;
+    background: #6b7280;
+    color: #ffffff;
+
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.5;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    cursor: help;
+}
+
+.schedule-header .tag-chip,
+.daily-subtitle .tag-chip {
+    font-size: 12px;
+}
+
+.group-name {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Главная страница                                                    */
+/* ------------------------------------------------------------------ */
+
+.hero {
+    display: grid;
+    place-items: center;
+    min-height: calc(100vh - 100px);
+    padding: 24px 0 40px;
+}
+
+.hero-ring {
+    --size: min(92vw, 80vh, 780px);
+
+    position: relative;
+    display: grid;
+    place-items: center;
+
+    width: var(--size);
+    height: var(--size);
+
+    border-radius: 50%;
+    background: radial-gradient(
+        circle at 50% 38%,
+        #3b5bdb 0%,
+        #243b9a 55%,
+        #17235f 100%
+    );
+    box-shadow:
+        0 24px 70px rgba(23, 35, 95, 0.35),
+        inset 0 0 0 2px rgba(255, 255, 255, 0.08);
+}
+
+/* Двенадцать звёзд по кругу */
+.hero-stars {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+
+    fill: #ffcc00;
+    filter: drop-shadow(0 0 6px rgba(255, 204, 0, 0.55));
+}
+
+.star {
+    animation: star-glow 4s ease-in-out infinite;
+}
+
+.star:nth-of-type(even) {
+    animation-delay: -2s;
+}
+
+.hero-text {
+    position: relative;
+    display: grid;
+    justify-items: center;
+    gap: calc(var(--size) * 0.03);
+    text-align: center;
+}
+
+/* Весёлое слово */
+.hero-title {
+    display: flex;
+    justify-content: center;
+    margin: 0;
+
+    font-family:
+        "Fredoka", "Baloo 2", "Comic Sans MS", "Chalkboard SE",
+        "Trebuchet MS", sans-serif;
+    font-size: calc(var(--size) * 0.115);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.01em;
+}
+
+.hero-title span {
+    display: inline-block;
+    transform: rotate(var(--tilt, 0deg));
+    text-shadow:
+        0 3px 0 rgba(10, 20, 70, 0.55),
+        0 8px 14px rgba(10, 20, 70, 0.35);
+    animation: hero-bounce 3.2s ease-in-out infinite;
+}
+
+.hero-title span:nth-child(1) {
+    color: #ffd43b;
+    --tilt: -6deg;
+    animation-delay: -0.35s;
+}
+
+.hero-title span:nth-child(2) {
+    color: #ff8787;
+    --tilt: 4deg;
+    animation-delay: -0.70s;
+}
+
+.hero-title span:nth-child(3) {
+    color: #74c0fc;
+    --tilt: -3deg;
+    animation-delay: -1.05s;
+}
+
+.hero-title span:nth-child(4) {
+    color: #8ce99a;
+    --tilt: 5deg;
+    animation-delay: -1.40s;
+}
+
+.hero-title span:nth-child(5) {
+    color: #ffa94d;
+    --tilt: -4deg;
+    animation-delay: -1.75s;
+}
+
+.hero-title span:nth-child(6) {
+    color: #f783ac;
+    --tilt: 3deg;
+    animation-delay: -2.10s;
+}
+
+.hero-title span:nth-child(7) {
+    color: #ffe066;
+    --tilt: -5deg;
+    animation-delay: -2.45s;
+}
+
+.hero-title span:nth-child(8) {
+    color: #63e6be;
+    --tilt: 4deg;
+    animation-delay: -2.80s;
+}
+
+.hero-title span:nth-child(9) {
+    color: #b197fc;
+    --tilt: -3deg;
+    animation-delay: -3.15s;
+}
+
+/* Строгая надпись */
+.hero-sub {
+    display: flex;
+    align-items: center;
+    gap: 0.9em;
+    margin: 0;
+
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: calc(var(--size) * 0.055);
+    font-weight: 700;
+    letter-spacing: 0.6em;
+    text-indent: 0.6em;
+    color: #ffffff;
+}
+
+.hero-sub::before,
+.hero-sub::after {
+    content: "";
+    width: calc(var(--size) * 0.07);
+    height: 2px;
+    background: #ffcc00;
+}
+
+/* Выбор раздела внутри круга: расписание или дневник */
+.hero-choice {
+    display: flex;
+    justify-content: center;
+    gap: calc(var(--size) * 0.025);
+    margin-top: calc(var(--size) * 0.035);
+}
+
+.hero-choice-link {
+    display: grid;
+    justify-items: center;
+    gap: 2px;
+
+    min-width: calc(var(--size) * 0.26);
+    padding:
+        calc(var(--size) * 0.016)
+        calc(var(--size) * 0.028);
+
+    border: 2px solid #ffcc00;
+    border-radius: 18px;
+    background: #ffcc00;
+    color: #17235f;
+
+    text-align: center;
+    text-decoration: none;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+a.hero-choice-link:hover,
+a.hero-choice-link:focus-visible {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.3);
+    outline: none;
+}
+
+a.hero-choice-link:focus-visible {
+    box-shadow: 0 0 0 3px #ffffff;
+}
+
+.hero-choice-link.is-soon {
+    border-style: dashed;
+    border-color: rgba(255, 255, 255, 0.55);
+    background: transparent;
+    color: rgba(255, 255, 255, 0.8);
+    cursor: default;
+}
+
+.hero-choice-name {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: max(15px, calc(var(--size) * 0.034));
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.hero-choice-note {
+    font-size: max(10px, calc(var(--size) * 0.02));
+    line-height: 1.25;
+    opacity: 0.85;
+}
+
+@keyframes hero-bounce {
+    0%,
+    100% {
+        transform: translateY(0) rotate(var(--tilt, 0deg));
+    }
+
+    50% {
+        transform: translateY(-6px) rotate(var(--tilt, 0deg));
+    }
+}
+
+@keyframes star-glow {
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .star,
+    .hero-title span {
+        animation: none;
+    }
+}
+
+/* Страница «Форма устарела» (ошибка CSRF) */
+.auth-link-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+}
+
+.auth-link-button:hover {
+    color: #ffffff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Общее расписание: группы по строкам, дни по столбцам               */
+/* ------------------------------------------------------------------ */
+
+.overview-filter {
+    margin-bottom: 12px;
+}
+
+.overview-hint {
+    margin: 0 0 16px;
+    font-size: 14px;
+    color: #6b7280;
+}
+
+.overview-wrap {
+    overflow-x: auto;
+    background: #ffffff;
+    border: 1px solid #d9dee8;
+    border-radius: 12px;
+}
+
+.overview-table {
+    width: 100%;
+    min-width: 960px;
+    border-collapse: collapse;
+}
+
+.overview-table th,
+.overview-table td {
+    padding: 0;
+    border: 1px solid #d9dee8;
+    vertical-align: top;
+}
+
+.overview-table thead th {
+    padding: 10px 12px;
+    background: #f3f4f6;
+    font-size: 14px;
+    text-align: left;
+}
+
+.overview-group {
+    position: sticky;
+    left: 0;
+    width: 200px;
+    padding: 10px 12px;
+    background: #f9fafb;
+    text-align: left;
+}
+
+.overview-table .overview-group {
+    padding: 10px 12px;
+}
+
+.overview-corner {
+    position: sticky;
+    left: 0;
+}
+
+.overview-group-link {
+    font-weight: 700;
+    color: #111827;
+}
+
+.overview-group-meta {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    font-weight: 400;
+    color: #6b7280;
+}
+
+/* Шахматный порядок: соседние клетки (и по строке, и по столбцу) разного тона */
+.overview-tone-0 {
+    background: #ffffff;
+}
+
+.overview-tone-1 {
+    background: #e6ecfa;
+}
+
+.overview-cell-link {
+    display: block;
+    min-height: 64px;
+    padding: 8px 10px;
+    color: inherit;
+    text-decoration: none;
+}
+
+.overview-cell-link:hover {
+    outline: 2px solid #3655d9;
+    outline-offset: -2px;
+}
+
+.overview-cell ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 13px;
+}
+
+.overview-cell li {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 2px;
+}
+
+.overview-number {
+    flex: none;
+    width: 14px;
+    font-weight: 700;
+    color: #3655d9;
+}
+
+.overview-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.overview-empty {
+    color: #9ca3af;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Блок заголовка страницы                                             */
+/* Слева название страницы (внизу слева), справа действия страницы.    */
+/* Ширина правой части подстраивается под её содержимое.               */
+/* ------------------------------------------------------------------ */
+
+.daily-header.page-head {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px 28px;
+
+    padding: 18px 22px;
+
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    box-shadow: 0 3px 12px rgb(15 23 42 / 4%);
+}
+
+/* Страница с собственным верхним отступом */
+.schedule-page > .daily-header.page-head {
+    margin-top: 0;
+}
+
+.page-head-title {
+    display: flex;
+    flex: 1 1 240px;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 6px;
+
+    min-width: 0;
+    padding-left: 14px;
+
+    border-left: 4px solid #3655d9;
+}
+
+.page-head-title h1 {
+    margin: 0;
+    font-size: 30px;
+    line-height: 1.1;
+    letter-spacing: 0.04em;
+    color: #1f2937;
+}
+
+.page-head-caption {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #4b5563;
+}
+
+.page-head-name {
+    font-size: 17px;
+    color: #1f2937;
+}
+
+.page-head-caption .tag-chip {
+    margin-left: 0;
+}
+
+.page-head-actions {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+
+    max-width: 100%;
+    margin-left: auto;
+    padding: 10px 12px;
+
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+}
+
+.page-head-actions .edit-link {
+    margin-left: 0;
+}
+
+.page-head-actions .date-nav-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 14px;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Поиск преподавателя                                                 */
+/* ------------------------------------------------------------------ */
+
+.teacher-picker {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.teacher-picker label {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.teacher-search {
+    width: 240px;
+    max-width: 100%;
+    min-height: 40px;
+    padding: 0 14px;
+
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #1f2937;
+
+    font: inherit;
+}
+
+.teacher-search:focus {
+    border-color: #3655d9;
+    outline: none;
+    box-shadow: 0 0 0 3px rgb(54 85 217 / 15%);
+}
+
+/* Список открывается, пока поле или сам список в фокусе (без JavaScript) */
+.teacher-results {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+
+    width: 340px;
+    min-width: 100%;
+    max-width: calc(100vw - 24px);
+    max-height: 340px;
+    margin: 0;
+    padding: 6px;
+    overflow-y: auto;
+
+    list-style: none;
+    background: #ffffff;
+    border: 1px solid #d1d5db;
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgb(15 23 42 / 16%);
+    outline: none;
+}
+
+.teacher-picker:focus-within .teacher-results {
+    display: block;
+}
+
+.teacher-results [hidden] {
+    display: none;
+}
+
+.teacher-result {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+
+    padding: 9px 12px;
+
+    border-radius: 8px;
+    color: #1f2937;
+    font-size: 14px;
+    text-decoration: none;
+}
+
+.teacher-result:hover,
+.teacher-result:focus {
+    background: #eef2ff;
+    outline: none;
+}
+
+.teacher-result.is-selected {
+    background: #e0e7ff;
+    color: #2946c7;
+    font-weight: 700;
+}
+
+.teacher-result .tag-chip {
+    flex: none;
+    margin-left: 0;
+}
+
+.teacher-empty {
+    padding: 10px 12px;
+    font-size: 14px;
+    color: #6b7280;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Предпросмотр цвета тега (Кузня)                                     */
+/* ------------------------------------------------------------------ */
+
+.tag-preview-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+
+    margin: 4px 0 14px;
+    font-size: 14px;
+    color: #6b7280;
+}
+
+.tag-preview-row[hidden] {
+    display: none;
+}
+
+.tag-preview-row .tag-chip {
+    max-width: 220px;
+    margin-left: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+
+@media (max-width: 600px) {
+    .daily-header.page-head {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 14px;
+    }
+
+    /* В столбце базис 240px означал бы высоту: возвращаем по содержимому */
+    .page-head-title {
+        flex: 0 0 auto;
+    }
+
+    .page-head-title h1 {
+        font-size: 24px;
+    }
+
+    .page-head-actions {
+        justify-content: flex-start;
+        width: 100%;
+        margin-left: 0;
+    }
+
+    .teacher-picker {
+        flex-wrap: wrap;
+        width: 100%;
+    }
+
+    .teacher-search {
+        flex: 1;
+        min-width: 0;
+    }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Кнопки смен: «Все смены», 1 смена, 2 смена                          */
+/* ------------------------------------------------------------------ */
+
+.shift-picker {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.shift-picker-title {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.shift-switch {
+    display: inline-flex;
+    overflow: hidden;
+
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.shift-button {
+    display: inline-flex;
+    align-items: center;
+    min-height: 38px;
+    padding: 0 14px;
+
+    border-left: 1px solid #d1d5db;
+    color: #374151;
+
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.shift-button:first-child {
+    border-left: 0;
+}
+
+.shift-button:hover,
+.shift-button:focus-visible {
+    background: #eef2ff;
+    color: #2946c7;
+    outline: none;
+}
+
+.shift-button.is-selected,
+.shift-button.is-selected:hover {
+    background: #3655d9;
+    color: #ffffff;
+}
+
+@media (max-width: 600px) {
+    .shift-picker {
+        flex-wrap: wrap;
     }
 }

@@ -3,49 +3,56 @@
 {% block content %}
 <div class="schedule-page">
 
-    <header class="schedule-header">
-        <h1>{{ group.group_name }}</h1>
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">
+                <span class="page-head-name">{{ group.group_name }}</span>
+                {% include "tag_chip.html" with tag=group.group_tag %}
+                <span class="daily-meta">
+                    {{ group.group_course }}
+                    ·
+                    {{ group.shift }}
+                </span>
+            </p>
+            <h1>РАСПИСАНИЕ</h1>
+        </div>
 
-        <span>
-            {{ group.group_course }}
-            ·
-            {{ group.shift }}
-        </span>
+        <div class="page-head-actions">
+            {% if user.is_staff %}
+                {% if edit_mode %}
+                    <a class="date-nav-link edit-link"
+                       href="?date={{ selected_date_iso }}">
+                        Готово
+                    </a>
+                {% else %}
+                    <a class="date-nav-link edit-link"
+                       href="?date={{ selected_date_iso }}&amp;edit=1">
+                        Правки на даты
+                    </a>
+                {% endif %}
 
-        {% if user.is_staff %}
-            {% if edit_mode %}
-                <a class="date-nav-link edit-link"
-                   href="?date={{ selected_date_iso }}">
-                    Готово
-                </a>
-            {% else %}
-                <a class="date-nav-link edit-link"
-                   href="?date={{ selected_date_iso }}&amp;edit=1">
-                    Правки на даты
+                <a class="date-nav-link"
+                   href="{% url 'group_edit' group_id=group.group_id %}">
+                    Редактировать
                 </a>
             {% endif %}
 
-            <a class="date-nav-link"
-               href="{% url 'group_edit' group_id=group.group_id %}">
-                Редактировать
-            </a>
-        {% endif %}
-
-        <nav class="date-nav" aria-label="Недели">
-            <a class="date-nav-link"
-               href="?date={{ prev_week_iso }}{{ edit_suffix }}">
-                ← Неделя
-            </a>
-            <span class="date-nav-label">{{ week_label }}</span>
-            <a class="date-nav-link"
-               href="{% url 'group_schedule' group_id=group.group_id %}{{ edit_first }}">
-                Сегодня
-            </a>
-            <a class="date-nav-link"
-               href="?date={{ next_week_iso }}{{ edit_suffix }}">
-                Неделя →
-            </a>
-        </nav>
+            <nav class="date-nav" aria-label="Недели">
+                <a class="date-nav-link"
+                   href="?date={{ prev_week_iso }}{{ edit_suffix }}">
+                    ← Неделя
+                </a>
+                <span class="date-nav-label">{{ week_label }}</span>
+                <a class="date-nav-link"
+                   href="{% url 'group_schedule' group_id=group.group_id %}{{ edit_first }}">
+                    Сегодня
+                </a>
+                <a class="date-nav-link"
+                   href="?date={{ next_week_iso }}{{ edit_suffix }}">
+                    Неделя →
+                </a>
+            </nav>
+        </div>
     </header>
 
     {% if edit_mode %}
@@ -88,7 +95,7 @@
                                         -
                                         {{ pair.time.pair_end_time|time:"H:i" }}
                                     {% else %}
-                                        —
+                                        &nbsp;
                                     {% endif %}
                                 </div>
 
@@ -104,7 +111,7 @@
                                             </span>
                                         {% endif %}
                                     {% else %}
-                                        —
+                                        &nbsp;
                                     {% endif %}
                                 </div>
 
@@ -153,7 +160,7 @@
                                                 <span class="pair-note">{{ lesson.note }}</span>
                                             {% endif %}
                                         {% else %}
-                                            —
+                                            &nbsp;
                                         {% endif %}
                                     </div>
                                 {% endif %}

@@ -136,6 +136,18 @@ def set_group(user, group):
     return True
 
 
+def set_teacher_tag(user, tag):
+    """Ставит тег преподавателю (None — снять). Остальным ролям — False."""
+    teacher_id = own_teacher_id(user)
+
+    if not teacher_id:
+        return False
+
+    Teacher.objects.filter(pk=teacher_id).update(teacher_tag=tag)
+
+    return True
+
+
 def real_teachers():
     """Преподаватели, у которых есть учётная запись (роль «Преподаватель»).
 

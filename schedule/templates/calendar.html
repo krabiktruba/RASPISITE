@@ -3,12 +3,13 @@
 {% block content %}
 <div class="daily-page calendar-page">
 
-    <header class="daily-header">
-        <div class="daily-heading">
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">{{ month_name }} {{ year }}</p>
             <h1>КАЛЕНДАРЬ</h1>
-            <p class="daily-subtitle">{{ month_name }} {{ year }}</p>
         </div>
 
+        <div class="page-head-actions">
         <nav class="date-nav" aria-label="Месяцы">
             {% if prev %}
                 <a class="date-nav-link"
@@ -30,6 +31,7 @@
                 </a>
             {% endif %}
         </nav>
+        </div>
     </header>
 
     <table class="calendar-table">

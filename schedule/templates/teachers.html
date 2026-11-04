@@ -4,65 +4,62 @@
 
 <div class="daily-page">
 
-    <header class="daily-header">
-
-        <div class="daily-heading">
-            <h1>РАСПИСАНИЕ</h1>
-
-            <p class="daily-subtitle">
-                {% if selected_teacher %}
-                    {{ selected_teacher.teacher_name }}
-                {% else %}
-                    Преподаватели
-                {% endif %}
-            </p>
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            {% if selected_teacher %}
+                <p class="page-head-caption">
+                    <span class="page-head-name">{{ selected_teacher.teacher_name }}</span>
+                    {% include "tag_chip.html" with tag=selected_teacher.teacher_tag %}
+                </p>
+            {% endif %}
+            <h1>ПРЕПОДАВАТЕЛИ</h1>
         </div>
 
-        <form
-            class="weekday-form"
-            method="get"
-            action="{% url 'teachers' %}"
-        >
-            {% if date_param %}
-                <input type="hidden" name="date" value="{{ date_param }}">
-            {% endif %}
+        <div class="page-head-actions">
 
-            <label for="teacher">Преподаватель</label>
+            <!-- Поиск преподавателя: список фильтруется по мере ввода (filter.js).
+                 Без JavaScript список целиком раскрывается при выборе поля. -->
+            <div class="teacher-picker" data-filter>
+                <label for="teacher-search">Преподаватель</label>
 
-            <select id="teacher" name="teacher">
-                {% for teacher in teachers %}
-                    <option
-                        value="{{ teacher.teacher_id }}"
-                        {% if teacher.teacher_id == selected_teacher_id %}selected{% endif %}
-                    >
-                        {{ teacher.teacher_name }}
-                    </option>
-                {% endfor %}
-            </select>
+                <input id="teacher-search" class="teacher-search" type="search"
+                       placeholder="Найти по ФИО…" autocomplete="off"
+                       data-filter-input>
 
-            <label for="shift">Смена</label>
+                <ul class="teacher-results" tabindex="-1">
+                    {% for teacher in teachers %}
+                        <li data-filter-item
+                            data-filter-text="{{ teacher.teacher_name }}">
+                            <a class="teacher-result{% if teacher.teacher_id == selected_teacher_id %} is-selected{% endif %}"
+                               href="?teacher={{ teacher.teacher_id }}{% if date_param %}&amp;date={{ date_param }}{% endif %}{% if selected_shift_id %}&amp;shift={{ selected_shift_id }}{% endif %}"
+                               {% if teacher.teacher_id == selected_teacher_id %}aria-current="true"{% endif %}>
+                                <span>{{ teacher.teacher_name }}</span>
+                                {% include "tag_chip.html" with tag=teacher.teacher_tag %}
+                            </a>
+                        </li>
+                    {% endfor %}
 
-            <select id="shift" name="shift">
-                <option
-                    value=""
-                    {% if not selected_shift_id %}selected{% endif %}
-                >
-                    Все смены
-                </option>
+                    <li class="teacher-empty" data-filter-empty
+                        {% if teachers %}hidden{% endif %}>
+                        Никого не найдено
+                    </li>
+                </ul>
+            </div>
 
-                {% for shift in shifts %}
-                    <option
-                        value="{{ shift.shift_id }}"
-                        {% if shift.shift_id == selected_shift_id %}selected{% endif %}
-                    >
-                        {{ shift.shift_id }} смена
-                    </option>
-                {% endfor %}
-            </select>
+            <!-- Смена: «Все смены», 1, 2. Обычные ссылки, преподаватель и дата
+                 сохраняются -->
+            <div class="shift-picker">
+                <span class="shift-picker-title">Смена</span>
 
-            <button type="submit">Показать</button>
-        </form>
-
+                <div class="shift-switch" role="group" aria-label="Смена">
+                    {% for link in shift_links %}
+                        <a class="shift-button{% if link.selected %} is-selected{% endif %}"
+                           href="{{ link.url }}"
+                           {% if link.selected %}aria-current="true"{% endif %}>{{ link.label }}</a>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
     </header>
 
     <div class="teacher-toolbar">
@@ -117,12 +114,12 @@
                                                     {% if lesson.time %}
                                                         {{ lesson.time.pair_start_time|time:"H:i" }}–{{ lesson.time.pair_end_time|time:"H:i" }}
                                                     {% else %}
-                                                        —
+                                                        &nbsp;
                                                     {% endif %}
                                                 </div>
                                             {% endfor %}
                                         {% else %}
-                                            —
+                                            &nbsp;
                                         {% endif %}
                                     </div>
 
@@ -137,7 +134,7 @@
                                                 </div>
                                             {% endfor %}
                                         {% else %}
-                                            —
+                                            &nbsp;
                                         {% endif %}
                                     </div>
 
@@ -152,7 +149,7 @@
                                                 </div>
                                             {% endfor %}
                                         {% else %}
-                                            —
+                                            &nbsp;
                                         {% endif %}
                                     </div>
 

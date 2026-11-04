@@ -13,6 +13,7 @@ from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 
 from .access import (
     full_name,
@@ -22,6 +23,7 @@ from .access import (
     role_label,
     set_group,
     set_role,
+    set_teacher_tag,
     user_role,
 )
 from .changes import (
@@ -66,6 +68,7 @@ from .dates import (
     short_label,
     week_days,
 )
+from .tags import build_tag_css
 from .forms import (
     GroupForm,
     PairForm,
@@ -87,6 +90,7 @@ from .models import (
     ScheduleChange,
     Shift,
     StudyHours,
+    Tag,
     Teacher,
     Weekday,
 )
@@ -115,12 +119,55 @@ def staff_required(view):
 
 
 # ---------------------------------------------------------------------------
+# Цвета тегов (таблица стилей)
+# ---------------------------------------------------------------------------
+
+def tag_styles(request):
+    """Правила цветов для меток тегов: по классу на каждый цвет в базе."""
+    colors = Tag.objects.values_list("tag_color", flat=True).distinct()
+
+    response = HttpResponse(
+        build_tag_css(colors),
+        content_type="text/css; charset=utf-8",
+    )
+    # Цвет можно сменить в Кузне, поэтому браузер каждый раз сверяется
+    response["Cache-Control"] = "no-cache"
+
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Главная страница
 # ---------------------------------------------------------------------------
 
 @login_required
 def main_page(request):
     return render(request, "mainpage.html")
+
+
+def csrf_failed(request, reason=""):
+    """Страница вместо ошибки 403, если форма устарела.
+
+    Токен формы перестаёт подходить после кнопки «Назад», после входа в
+    другой вкладке или если страница долго стояла открытой. Данные при этом
+    не меняются: человеку достаточно вернуться на страницу и повторить.
+    """
+    back_url = request.META.get("HTTP_REFERER", "")
+
+    # Возвращаем только на страницы этого же сайта.
+    if not back_url or not url_has_allowed_host_and_scheme(
+        back_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        back_url = reverse("home")
+
+    return render(
+        request,
+        "csrf_failed.html",
+        {"back_url": back_url},
+        status=403,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +448,9 @@ def group_schedule(request, group_id):
     group = get_object_or_404(
         Group.objects.select_related(
             "shift",
-            "group_course"
+            "group_course",
+            "group_tag",
+            "group_tag__tag_type",
         ),
         pk=group_id
     )
@@ -515,6 +564,8 @@ def daily_schedule(request):
             "shift",
             "group_course",
             "group_curator",
+            "group_tag",
+            "group_tag__tag_type",
         ).order_by("group_name", "group_id"),
         GROUPS_PER_PAGE,
     )
@@ -624,7 +675,9 @@ def teachers_schedule(request):
 
     # Преподаватели и смены для фильтров
     teachers = list(
-        Teacher.objects.order_by("teacher_name", "teacher_id")
+        Teacher.objects.select_related(
+            "teacher_tag", "teacher_tag__tag_type"
+        ).order_by("teacher_name", "teacher_id")
     )
     shifts = list(
         Shift.objects.order_by("shift_id")
@@ -789,6 +842,32 @@ def teachers_schedule(request):
         "shift": selected_shift_id,
     }
 
+    # Кнопки смен: «Все смены» и по одной на каждую смену. Меняется только
+    # показанная неделя, список преподавателей остаётся тем же.
+    date_value = requested_date.isoformat() if requested_date else ""
+
+    shift_links = [
+        {
+            "label": "Все смены",
+            "url": _teachers_url(
+                teacher=selected_teacher_id,
+                date=date_value,
+            ),
+            "selected": selected_shift_id is None,
+        }
+    ] + [
+        {
+            "label": f"{shift.shift_id} смена",
+            "url": _teachers_url(
+                teacher=selected_teacher_id,
+                date=date_value,
+                shift=shift.shift_id,
+            ),
+            "selected": shift.shift_id == selected_shift_id,
+        }
+        for shift in shifts
+    ]
+
     context = {
         "teachers": teachers,
         "shifts": shifts,
@@ -796,6 +875,7 @@ def teachers_schedule(request):
         "selected_teacher_id": selected_teacher_id,
         "selected_shift": selected_shift,
         "selected_shift_id": selected_shift_id,
+        "shift_links": shift_links,
         "schedule_days": schedule_days,
         "date_param": (
             requested_date.isoformat() if requested_date else ""
@@ -1332,6 +1412,12 @@ def users_roles(request):
         Group.objects.order_by("group_name", "group_id")
     )
     group_by_id = {group.pk: group for group in groups}
+    tags = list(
+        Tag.objects.select_related("tag_type").order_by(
+            "tag_type__tag_type_name", "tag_name", "tag_id"
+        )
+    )
+    tag_by_id = {tag.pk: tag for tag in tags}
     valid_roles = {value for value, _ in ROLE_CHOICES}
 
     # Преподаватели без учётной записи (остались от прежних версий):
@@ -1440,6 +1526,37 @@ def users_roles(request):
                         f"группа {group}.",
                     )
 
+            # Тег преподавателя
+            elif action == "set_teacher_tag":
+                raw_tag = request.POST.get("tag", "").strip()
+                tag = tag_by_id.get(_int_param(raw_tag))
+
+                if target is None:
+                    messages.error(request, "Пользователь не найден.")
+
+                elif raw_tag and tag is None:
+                    messages.error(request, "Выберите тег из списка.")
+
+                elif not set_teacher_tag(target, tag):
+                    messages.error(
+                        request,
+                        "Тег назначается только преподавателям.",
+                    )
+
+                elif tag is None:
+                    messages.success(
+                        request,
+                        f"Преподаватель {target.get_username()}: "
+                        "тег снят.",
+                    )
+
+                else:
+                    messages.success(
+                        request,
+                        f"Преподаватель {target.get_username()}: "
+                        f"тег {tag.full_name}.",
+                    )
+
             elif role not in valid_roles:
                 messages.error(request, "Выберите роль из списка.")
 
@@ -1504,6 +1621,11 @@ def users_roles(request):
             "teacher_id": current_teacher_id,
             "teacher_options": teacher_options,
             "is_student": role == ROLE_STUDENT,
+            "is_teacher": role == ROLE_TEACHER,
+            "teacher_tag_id": (
+                item.profile.teacher.teacher_tag_id
+                if current_teacher_id else None
+            ),
             "group": group_by_id.get(own_group_id(item)),
             "locked": (
                 item.is_superuser or item.pk == request.user.pk
@@ -1513,6 +1635,7 @@ def users_roles(request):
     context = {
         "rows": rows,
         "groups": groups,
+        "tags": tags,
         "new_user_form": new_user_form,
         "role_choices": ROLE_CHOICES,
         "page_obj": page_obj,
@@ -1952,6 +2075,87 @@ def workshop_export(request):
     response["Content-Disposition"] = f'attachment; filename="{name}"'
 
     return response
+
+
+@staff_required
+def schedule_overview(request):
+    """Общее расписание: строки — группы, столбцы — дни недели (Пн–Сб).
+
+    Показывает постоянное недельное расписание (таблица Day), разовые правки
+    сюда не входят. Клетки раскрашены в шахматном порядке, чтобы шесть дней
+    одной группы не сливались. Клетка ведёт в редактор недели этой группы.
+    """
+    names = _weekday_names()
+    columns = [
+        {"number": number, "name": names.get(number, WEEKDAY_NAMES[number])}
+        for number in range(1, 7)
+    ]
+
+    shifts = list(Shift.objects.order_by("shift_id"))
+    selected_shift_id = _int_param(request.GET.get("shift"))
+
+    if selected_shift_id not in {shift.shift_id for shift in shifts}:
+        selected_shift_id = None
+
+    groups = Group.objects.select_related(
+        "shift",
+        "group_course",
+        "group_tag",
+        "group_tag__tag_type",
+    ).order_by("shift_id", "group_name", "group_id")
+
+    if selected_shift_id:
+        groups = groups.filter(shift_id=selected_shift_id)
+
+    groups = list(groups)
+
+    lessons = {}
+
+    days = (
+        Day.objects
+        .filter(
+            group_id__in=[group.group_id for group in groups],
+            weekday_id__in=range(1, 7),
+            pair_number__range=(1, 6),
+        )
+        .select_related("pair", "pair__teacher")
+        .order_by("pair_number")
+    )
+
+    for day in days:
+        lessons.setdefault((day.group_id, day.weekday_id), []).append({
+            "number": day.pair_number,
+            "name": day.pair.pair_name,
+            "teacher": day.pair.teacher.teacher_name,
+        })
+
+    rows = []
+
+    for row_index, group in enumerate(groups):
+        edit_url = reverse("group_edit", args=[group.group_id])
+
+        cells = [
+            {
+                # Шахматный порядок: тон зависит от суммы номера строки и столбца
+                "tone": (row_index + column_index) % 2,
+                "lessons": lessons.get((group.group_id, column["number"]), []),
+                "url": edit_url,
+                "label": (
+                    f"{group.group_name}, {column['name']}: "
+                    "открыть редактор расписания группы"
+                ),
+            }
+            for column_index, column in enumerate(columns)
+        ]
+
+        rows.append({"group": group, "cells": cells})
+
+    return render(request, "overview.html", {
+        "columns": columns,
+        "rows": rows,
+        "shifts": shifts,
+        "selected_shift_id": selected_shift_id,
+    })
 
 
 @staff_required

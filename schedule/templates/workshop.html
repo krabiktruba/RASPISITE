@@ -3,12 +3,10 @@
 {% block content %}
 <div id="workshop-page" class="daily-page">
 
-    <header class="daily-header">
-        <div>
-            <h1 class="daily-heading">Мастерская</h1>
-            <p class="daily-subtitle">
-                Управление данными и расписанием звонков.
-            </p>
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Управление данными и расписанием звонков.</p>
+            <h1>КУЗНЯ</h1>
         </div>
     </header>
 
@@ -145,6 +143,18 @@
             {% include "workshop_card.html" with card=cards.tag %}
 
             {% include "workshop_card.html" with card=cards.tag_type %}
+
+            <section class="workshop-card">
+                <h2>Общее расписание</h2>
+                <p>
+                    Все группы за неделю в одной таблице: строки — группы,
+                    столбцы — дни. Клетка открывает редактор группы.
+                </p>
+                <a class="workshop-button workshop-button-link"
+                   href="{% url 'overview' %}">
+                    Открыть таблицу
+                </a>
+            </section>
 
         </div>
 

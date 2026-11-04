@@ -11,6 +11,7 @@ from django.db.models import Q
 
 from .access import create_account, real_teachers
 from .gmail import MAX_ADDRESS_LENGTH, normalize_gmail
+from .tags import TAG_COLOR_DEFAULT, normalize_color
 from .models import (
     ROLE_STUDENT,
     ROLE_TEACHER,
@@ -28,6 +29,7 @@ FIELD_LABELS = {
     "tag_type_name": "Название типа тега",
     "tag_type": "Тип тега",
     "tag_name": "Название тега",
+    "tag_color": "Цвет тега",
     "teacher_tag": "Тег преподавателя",
     "teacher_name": "ФИО преподавателя",
     "group_tag": "Тег группы",
@@ -86,6 +88,9 @@ class WorkshopFormMixin:
 
                 field.label_from_instance = self.choice_label
 
+                if model is Tag:
+                    field.queryset = field.queryset.select_related("tag_type")
+
                 if field.required:
                     field.empty_label = "— Выберите —"
                 else:
@@ -101,6 +106,11 @@ class WorkshopFormMixin:
 
     @staticmethod
     def choice_label(obj):
+        # Теги в списках — «Тип: Название», чтобы одинаковые названия
+        # разных типов не путались
+        if isinstance(obj, Tag):
+            return obj.full_name
+
         for attribute in (
                 "teacher_name",
                 "tag_name",
@@ -126,10 +136,28 @@ class TagTypeForm(WorkshopFormMixin, forms.ModelForm):
         model = TagType
         fields = ("tag_type_name",)
 
+class ColorInput(forms.TextInput):
+    """Выбор цвета встроенным окном браузера (без JavaScript)."""
+
+    input_type = "color"
+
+
 class TagForm(WorkshopFormMixin, forms.ModelForm):
     class Meta:
         model = Tag
-        fields = ("tag_type", "tag_name")
+        fields = ("tag_type", "tag_name", "tag_color")
+        widgets = {"tag_color": ColorInput()}
+
+    def clean_tag_color(self):
+        value = (self.cleaned_data.get("tag_color") or "").strip()
+
+        if not value:
+            return TAG_COLOR_DEFAULT
+
+        try:
+            return normalize_color(value)
+        except ValueError as exc:
+            raise ValidationError(str(exc))
 
 class GroupForm(WorkshopFormMixin, forms.ModelForm):
     class Meta:

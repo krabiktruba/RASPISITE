@@ -1,5 +1,8 @@
 from django.conf import settings
+from django.core.validators import RegexValidator
 from django.db import models
+
+from .tags import TAG_COLOR_DEFAULT, color_class
 
 
 class TagType(models.Model):
@@ -21,6 +24,19 @@ class Tag(models.Model):
         db_column="tag_type"
     )
     tag_name = models.CharField(max_length=100)
+    # Цвет метки тега: #RRGGBB
+    tag_color = models.CharField(
+        max_length=7,
+        blank=True,
+        default=TAG_COLOR_DEFAULT,
+        db_column="tag_color",
+        validators=[
+            RegexValidator(
+                r"^#[0-9a-fA-F]{6}$",
+                "Цвет нужно указать в виде #RRGGBB.",
+            )
+        ],
+    )
 
     class Meta:
         db_table = "Tag"
@@ -33,6 +49,15 @@ class Tag(models.Model):
 
     def __str__(self):
         return self.tag_name
+
+    @property
+    def full_name(self):
+        """«Тип: Название» — полное имя тега (показывается при наведении)."""
+        return f"{self.tag_type.tag_type_name}: {self.tag_name}"
+
+    @property
+    def color_class(self):
+        return color_class(self.tag_color)
 
 
 class Teacher(models.Model):

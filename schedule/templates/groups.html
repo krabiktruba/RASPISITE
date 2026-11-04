@@ -3,14 +3,13 @@
 {% block content %}
 <div class="daily-page">
 
-    <header class="daily-header">
-        <div class="daily-heading">
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">{% if is_today_selected %}Сегодня — {% endif %}{{ selected_label }}</p>
             <h1>ГРУППЫ</h1>
-            <p class="daily-subtitle">
-                {% if is_today_selected %}Сегодня — {% endif %}{{ selected_label }}
-            </p>
         </div>
 
+        <div class="page-head-actions">
         <nav class="date-nav" aria-label="Недели">
             <a class="date-nav-link" href="?date={{ prev_week_iso }}">
                 ← Неделя
@@ -20,6 +19,7 @@
                 Неделя →
             </a>
         </nav>
+        </div>
     </header>
 
     <nav class="weekday-tabs" aria-label="Дни недели">
@@ -42,7 +42,10 @@
                 <article class="day-card">
 
                     <header class="day-title teacher-day-title">
-                        <span>{{ item.group.group_name }}</span>
+                        <span class="group-name">
+                            {{ item.group.group_name }}
+                            {% include "tag_chip.html" with tag=item.group.group_tag %}
+                        </span>
 
                         <span class="daily-meta">
                             {{ item.group.group_course }}
@@ -79,7 +82,7 @@
                                     {% if pair.time %}
                                         {{ pair.time.pair_start_time|time:"H:i" }}–{{ pair.time.pair_end_time|time:"H:i" }}
                                     {% else %}
-                                        —
+                                        &nbsp;
                                     {% endif %}
                                 </div>
 
@@ -90,7 +93,7 @@
                                             <span class="status-badge status-{{ lesson.status }}">{{ lesson.status_label }}</span>
                                         {% endif %}
                                     {% else %}
-                                        —
+                                        &nbsp;
                                     {% endif %}
                                 </div>
 
@@ -101,7 +104,7 @@
                                             <span class="pair-note">{{ lesson.note }}</span>
                                         {% endif %}
                                     {% else %}
-                                        —
+                                        &nbsp;
                                     {% endif %}
                                 </div>
                             </div>
