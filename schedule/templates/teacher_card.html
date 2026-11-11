@@ -1,0 +1,77 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Профиль преподавателя</p>
+            <h1>{{ teacher.teacher_name }}</h1>
+        </div>
+
+        <div class="page-head-actions">
+            {% if edit_url %}
+                <a class="date-nav-link" href="{{ edit_url }}">Редактировать</a>
+            {% endif %}
+            <a class="date-nav-link" href="{% url 'teachers' %}?teacher={{ teacher.pk }}">Расписание</a>
+        </div>
+    </header>
+
+    <dl class="profile-facts cols-3">
+        <div class="profile-fact">
+            <dt>Тег преподавателя</dt>
+            <dd>
+                {% if teacher.teacher_tag %}
+                    {% include "profile_tag.html" with tag=teacher.teacher_tag prefix="t" %}
+                {% else %}
+                    <span class="users-hint">без тега</span>
+                {% endif %}
+            </dd>
+        </div>
+
+        <div class="profile-fact">
+            <dt>Курирует</dt>
+            <dd>
+                {% for group in curated_groups %}
+                    <a href="{% url 'group_card' group_id=group.pk %}">{{ group.group_name }}</a>{% if not forloop.last %}<span class="profile-sep">,</span>{% endif %}
+                {% empty %}
+                    <span class="users-hint">нет</span>
+                {% endfor %}
+            </dd>
+        </div>
+
+        <div class="profile-fact">
+            <dt>Учётная запись</dt>
+            <dd>
+                {% if show_login %}
+                    {{ account.get_username }}
+                {% elif has_account %}
+                    есть
+                {% else %}
+                    <span class="users-hint">нет (запись осталась от прежних версий)</span>
+                {% endif %}
+            </dd>
+        </div>
+    </dl>
+
+    <div class="profile-sections">
+        <section class="profile-section">
+            <h2 class="profile-section-title">Пары <span class="profile-count">{{ pairs|length }}</span></h2>
+
+            {% if pairs %}
+                <ul class="profile-list">
+                    {% for pair in pairs %}
+                        <li>
+                            <span class="main">{{ pair.pair_name }}</span>
+                            <span class="muted">{% for group in pair.groups.all %}<a href="{% url 'group_card' group_id=group.pk %}">{{ group.group_name }}</a>{% if not forloop.last %}, {% endif %}{% empty %}группы не привязаны{% endfor %}</span>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="users-hint">Пар нет.</p>
+            {% endif %}
+        </section>
+    </div>
+
+</div>
+{% endblock %}

@@ -61,7 +61,7 @@
                                     {% include "tag_chip.html" with tag=row.group.group_tag %}
                                 </span>
                                 <span class="overview-group-meta">
-                                    {{ row.group.group_course_id }} курс · {{ row.group.shift_id }} смена
+                                    {% include "group_meta.html" with group=row.group %}
                                 </span>
                             </th>
 

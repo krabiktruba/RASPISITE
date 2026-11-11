@@ -177,7 +177,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 24px;
+    gap: 16px;
 }
 
 
@@ -208,7 +208,7 @@ body {
 .main-nav {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 4px;
 }
 
 .nav-link {
@@ -216,7 +216,7 @@ body {
     align-items: center;
     justify-content: center;
 
-    padding: 11px 17px;
+    padding: 11px 13px;
     border-radius: 9px;
 
     font-size: 15px;
@@ -232,6 +232,27 @@ body {
 .nav-link:hover {
     background: #eef2ff;
     color: #3655d9;
+}
+
+/* Кнопка «Назад»: в самом правом краю шапки, после «Выйти» */
+.main-nav {
+    margin-left: auto;
+}
+
+.nav-back {
+    flex-shrink: 0;
+    border: 1px solid #d1d5db;
+    background: #ffffff;
+}
+
+.nav-back:hover {
+    border-color: #c7d2fe;
+}
+
+/* Меню-бургер и почта в меню: видны только на узких экранах */
+.nav-toggle,
+.nav-user {
+    display: none;
 }
 
 
@@ -250,25 +271,8 @@ body {
 /* Адаптация для узких экранов */
 
 @media (max-width: 600px) {
-    .header-inner {
-        padding: 16px 20px;
-        align-items: flex-start;
-        flex-direction: column;
-        gap: 14px;
-    }
-
-    .main-nav {
-        width: 100%;
-        flex-wrap: wrap;
-        gap: 5px;
-    }
-
-    .nav-link {
-        padding: 9px 12px;
-    }
-
     .page-content {
-        padding: 18px 12px;
+        padding: 16px 16px 20px;
     }
 }
 
@@ -933,6 +937,11 @@ body {
     }
 }
 
+/* Не трогать */
+#workshop-page .daily-header {
+    margin-top: 0px
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Авторизация                                                         */
@@ -1396,6 +1405,12 @@ body {
     border-color: #fca5a5;
     background: #fef2f2;
     color: #991b1b;
+}
+
+.message.warning {
+    border-color: #fcd34d;
+    background: #fffbeb;
+    color: #92400e;
 }
 
 .card-link,
@@ -2620,4 +2635,1562 @@ a.hero-choice-link:focus-visible {
     .shift-picker {
         flex-wrap: wrap;
     }
+}
+
+
+/* ---------- Раунд 3: строка пользователя и карточка студента ---------- */
+
+.user-row-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.user-row-form {
+    min-width: 260px;
+}
+
+.user-row-form select {
+    flex: 1 1 120px;
+    min-width: 110px;
+    max-width: 100%;
+}
+
+.user-row-form .users-hint {
+    margin: 0;
+}
+
+.users-table th a {
+    color: #3655d9;
+}
+
+.person-card {
+    max-width: 640px;
+}
+
+.card-facts {
+    margin: 0;
+}
+
+.card-fact {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.card-fact:last-child {
+    border-bottom: 0;
+}
+
+.card-fact dt {
+    flex: 0 0 160px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #6b7280;
+}
+
+.card-fact dd {
+    flex: 1 1 200px;
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+    .card-fact dt {
+        flex-basis: 100%;
+    }
+}
+
+
+/* ---------- Раунд 4: карточки преподавателя и группы ---------- */
+
+.person-card + .person-card {
+    margin-top: 20px;
+}
+
+.card-list {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.card-list li {
+    padding: 6px 0;
+    overflow-wrap: anywhere;
+}
+
+.card-list-sep {
+    margin: 0 4px;
+    color: #9ca3af;
+}
+
+
+/* ---------- Раунд 5: поиск групп ---------- */
+
+.group-search {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.group-search label {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.group-search-input {
+    min-height: 38px;
+    width: 220px;
+    max-width: 100%;
+    padding: 0 10px;
+
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    font: inherit;
+    font-size: 14px;
+}
+
+.group-search-button {
+    min-height: 38px;
+    padding: 0 14px;
+
+    border: 0;
+    border-radius: 8px;
+    background: #3655d9;
+    color: #ffffff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.group-search-reset {
+    font-size: 14px;
+}
+
+.group-search-info {
+    margin: 0 0 14px;
+    font-size: 14px;
+    color: #6b7280;
+}
+
+@media (max-width: 600px) {
+    .group-search,
+    .group-search-input {
+        width: 100%;
+    }
+}
+
+
+/* ---------- Раунд 6: годовой календарь ---------- */
+
+.year-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.mini-month {
+    padding: 10px 10px 12px;
+
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+}
+
+.mini-month.is-current {
+    border: 2px solid #3655d9;
+    padding: 9px 9px 11px;
+}
+
+.mini-month h2 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    text-align: center;
+}
+
+.mini-month h2 a {
+    color: #1f2937;
+    text-decoration: none;
+}
+
+.mini-month h2 a:hover {
+    color: #3655d9;
+}
+
+.mini-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+}
+
+.mini-table th {
+    padding: 2px 0;
+    font-size: 10px;
+    font-weight: 600;
+    color: #9ca3af;
+    text-align: center;
+}
+
+.mini-cell {
+    padding: 0;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1;
+}
+
+.mini-cell a {
+    display: block;
+    padding: 5px 0;
+    border-radius: 6px;
+    color: #1f2937;
+    text-decoration: none;
+}
+
+.mini-cell a:hover {
+    background: #eef2ff;
+}
+
+.mini-cell.is-sunday a {
+    color: #b91c1c;
+}
+
+.mini-cell.is-holiday a {
+    background: #fffbeb;
+    box-shadow: inset 0 0 0 1px #fcd34d;
+}
+
+.mini-cell.is-today a {
+    background: #3655d9;
+    color: #ffffff;
+    font-weight: 700;
+}
+
+@media (max-width: 1250px) {
+    .year-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 900px) {
+    .year-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 640px) {
+    .year-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    .mini-cell {
+        font-size: 11px;
+    }
+}
+
+
+/* ---------- Раунд 7: фильтры списка пользователей ---------- */
+
+.user-filters {
+    margin: 0 0 14px;
+}
+
+.user-filter-reset {
+    font-size: 14px;
+}
+
+.user-filter-info {
+    margin: 0 0 10px;
+}
+
+.users-table tr.is-new th,
+.users-table tr.is-new td {
+    background: #ecfdf5;
+}
+
+.users-table tr.is-new th {
+    box-shadow: inset 4px 0 0 #10b981;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Дневник: занятия преподавателя и таблица группы                     */
+/* ------------------------------------------------------------------ */
+
+.diary-lessons {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.diary-lesson {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #eeeeee;
+    font-size: 15px;
+}
+
+.diary-lesson:last-child {
+    border-bottom: 0;
+}
+
+.diary-lesson-number {
+    flex: 0 0 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: #eef2ff;
+    color: #3655d9;
+    font-weight: 700;
+    line-height: 28px;
+    text-align: center;
+}
+
+.diary-lesson-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.diary-lesson-progress {
+    flex: 0 0 auto;
+    font-size: 13px;
+    color: #6b7280;
+}
+
+.diary-lesson-progress.is-done {
+    color: #047857;
+    font-weight: 600;
+}
+
+/* Таблица группы на неделю.
+   Все столбцы с оценками одной ширины (88px), строки тонкие (32px),
+   слева закреплён столбец со студентами (184px). Ширины совпадают
+   с числами в diary/views.py. */
+.person-card.diary-wide {
+    max-width: none;
+}
+
+.diary-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.diary-toolbar .users-hint {
+    margin: 0;
+}
+
+.diary-scroll {
+    overflow-x: auto;
+}
+
+.diary-grid {
+    table-layout: fixed;
+    border-collapse: collapse;
+}
+
+.diary-col-student {
+    width: 184px;
+}
+
+.diary-col-mark {
+    width: 88px;
+}
+
+.diary-grid th,
+.diary-grid td {
+    height: 32px;
+    padding: 0;
+    border: 1px solid #e5e7eb;
+    font-size: 14px;
+    text-align: center;
+    vertical-align: middle;
+    overflow: hidden;
+}
+
+.diary-grid .diary-row-day th {
+    height: 28px;
+    background: #f9fafb;
+}
+
+.diary-grid .diary-row-lesson th {
+    height: 52px;
+    background: #ffffff;
+}
+
+.diary-grid th.diary-student {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    padding: 0 8px;
+    background: #ffffff;
+    font-size: 13px;
+    text-align: left;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.diary-grid .diary-row-day th.diary-student {
+    background: #f9fafb;
+}
+
+.diary-day.is-today {
+    background: #eef2ff;
+    color: #3655d9;
+}
+
+.diary-lesson-head {
+    padding: 0 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* Номер пары и название занятия: название не больше двух строк,
+   чтобы высота заголовка не менялась */
+.diary-lesson-no {
+    display: block;
+    font-size: 11px;
+    font-weight: 500;
+    color: #6b7280;
+}
+
+.diary-lesson-text {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+}
+
+/* Первое занятие дня: линия потолще, чтобы дни читались группами */
+.diary-grid .is-first,
+.diary-grid .diary-day {
+    border-left: 2px solid #cbd5e1;
+}
+
+.diary-cell {
+    font-weight: 600;
+}
+
+.diary-cell.mark-absent {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.diary-cell.mark-ill {
+    background: #e0f2fe;
+    color: #075985;
+}
+
+/* Поле занимает всю ячейку, чтобы Enter и клик попадали куда надо */
+.diary-input {
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: center;
+}
+
+.diary-input:focus {
+    outline: 2px solid #3655d9;
+    outline-offset: -2px;
+    background: #ffffff;
+}
+
+.diary-input.is-invalid {
+    outline: 2px solid #dc2626;
+    outline-offset: -2px;
+    background: #fef2f2;
+}
+
+
+/* ---------- Раунд 10: курс и смена плашками, ссылки без подчёркивания ---------- */
+
+/* Курс и смена рядом с названием группы: только цифры, полный текст — в title */
+.group-pills {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    vertical-align: middle;
+}
+
+.group-pill {
+    display: inline-block;
+    min-width: 24px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: #e5e7eb;
+    color: #111827;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-align: center;
+    cursor: help;
+}
+
+.overview-group-meta .group-pills {
+    margin-top: 2px;
+}
+
+.group-pills + .card-link {
+    margin-left: 8px;
+}
+
+/* Ссылки: цвет всегда, подчёркивание — только при наведении */
+a {
+    color: #3655d9;
+    text-decoration: none;
+}
+
+a:hover,
+a:focus-visible {
+    text-decoration: underline;
+}
+
+/* Ссылки-кнопки и плитки подчёркивать не нужно: у них своё наведение */
+a.date-nav-link:hover,
+a.date-nav-link:focus-visible,
+a.nav-link:hover,
+a.nav-link:focus-visible,
+a.brand:hover,
+a.brand:focus-visible,
+a.workshop-button:hover,
+a.workshop-button:focus-visible,
+a.workshop-picker-link:hover,
+a.workshop-picker-link:focus-visible,
+a.weekday-tab:hover,
+a.weekday-tab:focus-visible,
+a.teacher-result:hover,
+a.teacher-result:focus-visible,
+a.square-button:hover,
+a.square-button:focus-visible,
+a.shift-button:hover,
+a.shift-button:focus-visible,
+a.overview-cell-link:hover,
+a.overview-cell-link:focus-visible,
+a.auth-link-button:hover,
+a.auth-link-button:focus-visible,
+a.hero-choice-link:hover,
+a.hero-choice-link:focus-visible {
+    text-decoration: none;
+}
+
+
+/* ---------- Раунд 12: имя в заголовке — большое и ссылкой на профиль ---------- */
+
+.page-head-line {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+}
+
+.page-head-line .tag-chip {
+    margin-left: 0;
+}
+
+.page-head-link {
+    color: inherit;
+}
+
+.page-head-link:hover,
+.page-head-link:focus-visible {
+    color: #3655d9;
+    text-decoration: underline;
+}
+
+
+/* ---------- Раунд 13: сокращённое ФИО ---------- */
+
+.person-name {
+    white-space: nowrap;
+}
+
+
+/* ---------- Раунд 14: шапка на разных экранах ---------- */
+
+/* Пункты меню перестают помещаться в одну строку: меню прячется за кнопку */
+@media (max-width: 1340px) {
+    .header-inner {
+        flex-wrap: wrap;
+        min-height: 64px;
+        padding: 0 20px;
+        gap: 0 12px;
+    }
+
+    .brand {
+        padding: 14px 0;
+        font-size: 22px;
+    }
+
+    .nav-back {
+        order: 1;
+        margin-left: auto;
+        padding: 9px 14px;
+    }
+
+    .nav-toggle {
+        order: 2;
+        display: none;
+        align-items: center;
+        padding: 9px 14px;
+        border: 1px solid #d1d5db;
+        border-radius: 9px;
+        background: #ffffff;
+        font: 600 15px Arial, sans-serif;
+        color: #374151;
+        cursor: pointer;
+    }
+
+    .js .nav-toggle {
+        display: inline-flex;
+    }
+
+    .main-nav {
+        order: 3;
+        flex: 1 0 100%;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-left: 0;
+        padding: 4px 0 12px;
+    }
+
+    /* С JavaScript меню закрыто, пока его не откроют кнопкой «Меню» */
+    .js .nav-toggle ~ .main-nav {
+        display: none;
+    }
+
+    .js .nav-toggle ~ .main-nav.is-open {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 2px;
+    }
+
+    .main-nav.is-open .nav-link {
+        justify-content: flex-start;
+        padding: 13px 14px;
+        font-size: 16px;
+    }
+
+    .main-nav.is-open .nav-user {
+        display: block;
+        margin: 0;
+        padding: 6px 14px 0;
+        font-size: 13px;
+        color: #6b7280;
+        order: 99;
+    }
+
+    .main-nav.is-open .nav-logout {
+        order: 100;
+        margin-top: 4px;
+        padding-top: 6px;
+        border-top: 1px solid #e5e7eb;
+    }
+
+    .main-nav.is-open .nav-logout .nav-link {
+        width: 100%;
+    }
+}
+
+@media (max-width: 700px) {
+    .header-inner {
+        padding: 0 16px;
+    }
+
+    .brand {
+        font-size: 20px;
+    }
+
+    .nav-back {
+        padding: 8px 12px;
+    }
+}
+
+
+/* ---------- Раунд 15: профили плитками ---------- */
+
+.profile-facts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin: 16px 0 0;
+    padding: 0;
+}
+
+.profile-facts.cols-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.profile-fact {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    min-height: 84px;
+    padding: 14px 16px;
+    text-align: center;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    box-shadow: 0 3px 12px rgb(15 23 42 / 4%);
+}
+
+.profile-fact dt {
+    font-size: 13px;
+    font-weight: 600;
+    color: #6b7280;
+}
+
+.profile-fact dd {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 700;
+    color: #1f2937;
+    overflow-wrap: anywhere;
+}
+
+.profile-fact dd a {
+    color: #1f2937;
+}
+
+.profile-fact dd a:hover,
+.profile-fact dd a:focus-visible {
+    color: #3655d9;
+}
+
+.profile-fact .tag-chip {
+    margin-left: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 14px;
+}
+
+.profile-tag-link:hover,
+.profile-tag-link:focus-visible {
+    text-decoration: none;
+}
+
+.profile-sep {
+    margin: 0 8px;
+    color: #9ca3af;
+    font-weight: 400;
+}
+
+.profile-sections {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 22px;
+}
+
+.profile-facts.cols-4 + .profile-sections {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* Список по ширине равен двум плиткам */
+.profile-section {
+    grid-column: span 2;
+    min-width: 0;
+}
+
+.profile-section-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 10px;
+    padding: 8px 18px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    font-size: 20px;
+    line-height: 1.2;
+    color: #1f2937;
+    box-shadow: 0 3px 12px rgb(15 23 42 / 4%);
+}
+
+.profile-count {
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: #eef2ff;
+    color: #3655d9;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.profile-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.profile-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    min-height: 46px;
+    padding: 0 18px;
+    border-bottom: 1px solid #eef0f3;
+    font-size: 15px;
+}
+
+.profile-list li:last-child {
+    border-bottom: 0;
+}
+
+.profile-list a {
+    font-weight: 600;
+    color: #1f2937;
+}
+
+.profile-list a:hover,
+.profile-list a:focus-visible {
+    color: #3655d9;
+}
+
+.profile-list .main {
+    flex: 1;
+    min-width: 0;
+}
+
+.profile-list .muted {
+    color: #6b7280;
+    text-align: right;
+}
+
+.profile-list .num {
+    flex: 0 0 28px;
+    color: #9ca3af;
+    font-weight: 600;
+}
+
+.profile-section > .users-hint {
+    margin: 0;
+}
+
+/* Планшет и телефон: плитки — строки «подпись / значение», списки на всю ширину */
+@media (max-width: 900px) {
+    .profile-facts,
+    .profile-facts.cols-4,
+    .profile-sections,
+    .profile-facts.cols-4 + .profile-sections {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .profile-section {
+        grid-column: auto;
+    }
+
+    .profile-fact {
+        min-height: 0;
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        text-align: right;
+    }
+
+    .profile-fact dt {
+        text-align: left;
+    }
+}
+
+
+/* ---------- Раунд 16: дневник студента (оценки живут здесь, не в расписании) ---------- */
+
+.student-days {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 16px;
+    margin-top: 22px;
+    align-items: start;
+}
+
+.student-day {
+    min-width: 0;
+}
+
+.student-day-title {
+    margin: 0 0 10px;
+    font-size: 18px;
+    color: #1f2937;
+}
+
+.student-lessons li {
+    min-height: 56px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
+
+.student-lessons .main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-weight: 600;
+}
+
+.student-lesson-teacher {
+    font-size: 13px;
+    font-weight: 400;
+    color: #6b7280;
+}
+
+.student-mark {
+    flex: 0 0 auto;
+    min-width: 44px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: #f3f4f6;
+    font-weight: 700;
+    text-align: center;
+}
+
+.student-mark.mark-score {
+    background: #ecfdf5;
+    color: #047857;
+}
+
+.student-mark.mark-absent {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.student-mark.mark-ill {
+    background: #e0f2fe;
+    color: #075985;
+}
+
+.student-hint {
+    margin: 14px 0 0;
+}
+
+@media (max-width: 900px) {
+    .student-days {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+
+/* ---------- Раунд 17: страница «Пользователи» ---------- */
+
+/* Фильтры: все поля и плашки одной ширины, без JS */
+.user-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    align-items: end;
+    gap: 10px;
+}
+
+@media (min-width: 480px) {
+    .user-filter-search {
+        grid-column: span 2;
+    }
+}
+
+.user-filter {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.user-filter > label:not(.user-filter-pill) {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.user-filter select,
+.search-field input {
+    width: 100%;
+    min-height: 38px;
+    padding: 0 8px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    font: inherit;
+    font-size: 14px;
+}
+
+/* Поиск с лупой внутри правого края поля */
+.search-field {
+    position: relative;
+    display: block;
+}
+
+.search-field input {
+    padding-right: 42px;
+}
+
+.search-field input::-webkit-search-cancel-button {
+    display: none;
+}
+
+.search-go {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: #3655d9;
+    color: #ffffff;
+    cursor: pointer;
+}
+
+.search-go:hover {
+    background: #2b46b8;
+}
+
+/* Галочки в виде плашек: сам флажок скрыт, нажатое состояние — заливка */
+.user-filter-pill {
+    position: relative;
+    display: block;
+    cursor: pointer;
+}
+
+.user-filter-pill input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+}
+
+.user-filter-pill span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    min-height: 38px;
+    padding: 0 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    font-size: 14px;
+    text-align: center;
+    user-select: none;
+}
+
+.user-filter-pill input:checked + span {
+    border-color: #3655d9;
+    background: #e8edff;
+    color: #1f3aa8;
+    font-weight: 600;
+}
+
+.user-filter-pill input:focus-visible + span {
+    outline: 2px solid #3655d9;
+    outline-offset: 2px;
+}
+
+.user-filter-reset {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+}
+
+/* Строки: больше сведений, текст мельче */
+.users-table .user-mail,
+.users-table .user-info,
+.users-table .user-login {
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+.users-table .user-mail {
+    min-width: 170px;
+    overflow-wrap: break-word;
+}
+
+.users-table .user-login {
+    white-space: nowrap;
+}
+
+.user-info-sub {
+    margin-top: 2px;
+    color: #6b7280;
+    font-size: 12px;
+}
+
+.user-info-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+}
+
+.user-info-group {
+    white-space: nowrap;
+}
+
+.user-info .group-pills {
+    margin-left: 6px;
+}
+
+.user-info .group-pill {
+    min-width: 20px;
+    padding: 1px 5px;
+    font-size: 11px;
+}
+
+
+/* ---------- Раунд 19: пары отдельным объектом ---------- */
+
+.edit-hint {
+    margin: 0 0 12px;
+}
+
+/* Сводка по группе под расписанием (только администратор) */
+.group-stats {
+    margin: 18px 0 0;
+    padding: 14px 16px;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    background: #ffffff;
+}
+
+.group-stats-title {
+    margin: 0 0 10px;
+    font-size: 15px;
+}
+
+.group-stats-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+    margin: 0;
+}
+
+.group-stats-list div {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: #f3f4f6;
+}
+
+.group-stats-list dt {
+    color: #6b7280;
+    font-size: 12px;
+}
+
+.group-stats-list dd {
+    margin: 2px 0 0;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+/* Выбор групп у пары в Кузне: список с прокруткой */
+#id_pair-groups {
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 6px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+#id_pair-groups label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 3px 0;
+    font-weight: 400;
+}
+
+
+/* ---------- Раунд 20: ZIP со всеми CSV и карточка «Дневник» ---------- */
+
+.workshop-zip {
+    display: block;
+    margin-top: 10px;
+    text-align: center;
+}
+
+.workshop-modes {
+    margin: 10px 0;
+    padding: 8px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+}
+
+.workshop-modes legend {
+    padding: 0 6px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.workshop-modes .workshop-check {
+    align-items: flex-start;
+    margin: 6px 0;
+}
+
+.workshop-diary-card .workshop-data-form + .workshop-data-form {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid #e5e7eb;
+}
+
+
+/* ---------- Раунд 21: единый вид дневника и выбор группы ---------- */
+
+/* Дневник студента в том же «тонком» стиле, что и таблица группы:
+   те же границы, высота строк и размер оценки */
+.student-lessons li {
+    min-height: 40px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+}
+
+.student-mark {
+    min-width: 40px;
+    padding: 3px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+.student-mark.mark-score {
+    border-color: #a7f3d0;
+}
+
+.student-mark.mark-absent {
+    border-color: #fde68a;
+}
+
+.student-mark.mark-ill {
+    border-color: #bae6fd;
+}
+
+.student-day-title {
+    font-size: 16px;
+}
+
+/* Выбор группы (по макету): в шапке справа поиск и тег, ниже плитки
+   в три колонки — название группы крупно по центру и тег под ним */
+.diary-choice-search {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.diary-choice-search .search-field {
+    width: 220px;
+}
+
+.diary-tag-select {
+    box-sizing: border-box;
+    width: 200px;
+    min-height: 38px;
+    padding: 0 8px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    font: inherit;
+    font-size: 14px;
+}
+
+.diary-subnav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 12px;
+}
+
+.diary-lessons-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    margin-bottom: 6px;
+}
+
+.diary-lessons-head h2 {
+    margin: 0;
+}
+
+.diary-group-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin: 0 0 12px;
+    padding: 0;
+    list-style: none;
+}
+
+.diary-group-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    box-sizing: border-box;
+    min-height: 88px;
+    height: 100%;
+    padding: 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #f3f4f6;
+    color: inherit;
+    text-align: center;
+    text-decoration: none;
+}
+
+.diary-group-tile:hover {
+    border-color: #3655d9;
+    background: #e8edff;
+}
+
+.diary-group-name {
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1.15;
+    overflow-wrap: anywhere;
+}
+
+.diary-choice-empty {
+    margin: 8px 0 0;
+}
+
+@media (max-width: 900px) {
+    .diary-group-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 560px) {
+    .diary-group-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .diary-choice-search .search-field,
+    .diary-tag-select {
+        width: 100%;
+    }
+}
+
+
+/* ---------- Раунд 23: журнал ---------- */
+
+.journal-filters {
+    display: grid;
+    gap: 10px;
+}
+
+.journal-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.journal-filter-title {
+    flex: 0 0 84px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+}
+
+/* Плашки фильтров журнала: короткие (курс, семестр, группа) одной ширины,
+   «широкие» (неделя, предмет) по длине названия */
+.journal-filter-row .user-filter-pill {
+    min-width: 64px;
+}
+
+.journal-filter-row .user-filter-pill.journal-pill-wide {
+    min-width: 0;
+}
+
+.journal-filter-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.journal-filter-actions .users-hint {
+    margin: 0;
+}
+
+.journal-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 18px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    color: #374151;
+}
+
+.journal-legend {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #6b7280;
+}
+
+/* Столбец с названием группы: узкий, закреплён рядом со студентом */
+.journal-col-group {
+    width: 72px;
+}
+
+.diary-grid th.journal-group {
+    position: sticky;
+    left: 184px;
+    z-index: 1;
+    padding: 0 6px;
+    background: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7280;
+    white-space: nowrap;
+}
+
+.journal-grid .diary-row-day th.journal-group {
+    background: #f9fafb;
+}
+
+/* Группы различаются чередованием полос: белая — серая — белая… */
+.journal-grid tr.journal-stripe-a td,
+.journal-grid tr.journal-stripe-a th {
+    background: #ffffff;
+}
+
+.journal-grid tr.journal-stripe-b td,
+.journal-grid tr.journal-stripe-b th {
+    background: #eceef2;
+}
+
+/* Занятия нет у группы студента: штриховка вместо ячейки ввода */
+.journal-grid tr td.is-none {
+    background-image: repeating-linear-gradient(
+        135deg, transparent 0, transparent 5px, rgba(107, 114, 128, 0.18) 5px,
+        rgba(107, 114, 128, 0.18) 6px
+    );
+}
+
+.journal-grid .diary-lesson-head a {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+}
+
+.journal-grid .diary-lesson-head a:hover .diary-lesson-text {
+    text-decoration: underline;
+}
+
+.journal-grid .diary-student a {
+    color: inherit;
+    text-decoration: none;
+}
+
+/* «Н» — красный, «Б» — синий квадратик (в журнале без заливки ячейки) */
+.journal-flag {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    color: #ffffff;
+}
+
+.journal-flag.is-absent {
+    background: #dc2626;
+}
+
+.journal-flag.is-ill {
+    background: #2563eb;
+}
+
+
+/* ---------- Раунд 24: статистика и общий журнал ---------- */
+
+.journal-col-stat {
+    width: 64px;
+}
+
+.diary-grid .journal-stat {
+    padding: 0 4px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+}
+
+.journal-grid .diary-row-day th.journal-stat {
+    background: #f9fafb;
+    font-size: 12px;
+    color: #6b7280;
+}
+
+/* Общий журнал: таблица по содержимому, а не на всю ширину */
+.journal-general-grid {
+    table-layout: auto;
+    min-width: 520px;
+}
+
+.journal-general-grid th,
+.journal-general-grid td {
+    padding: 0 14px;
+    height: 32px;
+}
+
+.journal-general-grid thead th {
+    background: #f9fafb;
+    font-size: 12px;
+    color: #6b7280;
+}
+
+.journal-general-grid .journal-general-name {
+    text-align: left;
+}
+
+.journal-general-grid tbody th a {
+    color: inherit;
+    text-decoration: none;
+}
+
+.journal-general-grid tbody th a:hover {
+    color: #3655d9;
+    text-decoration: underline;
+}
+
+.journal-general-grid tfoot th,
+.journal-general-grid tfoot td {
+    background: #f9fafb;
+    font-weight: 700;
+}
+
+.journal-general-hint {
+    margin: 12px 0 0;
 }

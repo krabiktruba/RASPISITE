@@ -1,0 +1,83 @@
+{# Карточка «Дневник»: экспорт и импорт оценок (CSV) #}
+<section class="workshop-card workshop-diary-card">
+    <h2>Дневник: экспорт и импорт</h2>
+
+    <p class="workshop-hint">
+        Оценки, «Н» и «Б» всех студентов одним файлом: студент (логин), дата,
+        номер пары, предмет, преподаватель, оценка.
+    </p>
+
+    <!-- Экспорт: обычная ссылка на файл -->
+    <form class="workshop-data-form" method="get"
+          action="{% url 'workshop_export' %}">
+        <input type="hidden" name="kind" value="diary">
+
+        <div class="workshop-button-row">
+            <button class="workshop-button" type="submit">
+                Скачать оценки
+            </button>
+
+            <button class="workshop-button workshop-button-link"
+                    type="submit" name="template" value="1">
+                Пустой шаблон
+            </button>
+        </div>
+    </form>
+
+    <!-- Импорт: два режима -->
+    <form class="workshop-data-form" method="post"
+          enctype="multipart/form-data" action="{% url 'workshop' %}">
+        {% csrf_token %}
+        <input type="hidden" name="time_shift" value="{{ selected_shift_id }}">
+        <input type="hidden" name="time_mode" value="{{ selected_time_mode }}">
+        <input type="hidden" name="kind" value="diary">
+
+        <label for="diary-file">Файл CSV</label>
+        <input id="diary-file" type="file" name="file"
+               accept=".csv,text/csv">
+
+        <fieldset class="workshop-modes">
+            <legend>Как загрузить</legend>
+
+            <label class="workshop-check">
+                <input type="radio" name="mode" value="overlay"
+                    {% if not import_report.replace %}checked{% endif %}>
+                <span>Наложить: записи из файла добавятся или обновятся,
+                    остальные оценки останутся</span>
+            </label>
+
+            <label class="workshop-check">
+                <input type="radio" name="mode" value="replace"
+                    {% if import_report.replace %}checked{% endif %}>
+                <span>Заменить полностью: сначала удалятся все оценки,
+                    останутся только записи из файла</span>
+            </label>
+        </fieldset>
+
+        <label class="workshop-check">
+            <input type="checkbox" name="confirm_replace" value="1">
+            <span>Подтверждаю полную замену (нужна только для режима
+                «Заменить полностью»)</span>
+        </label>
+
+        <label class="workshop-check">
+            <input type="checkbox" name="dry_run" value="1"
+                {% if import_report.dry_run and import_kind == "diary" %}checked{% endif %}>
+            <span>Только проверить, ничего не сохранять</span>
+        </label>
+
+        <button class="workshop-button" type="submit"
+                name="action" value="import_csv">
+            Загрузить оценки
+        </button>
+    </form>
+
+    <p class="workshop-hint">
+        Сначала должны быть загружены пары и студенты. Рекомендуется сперва
+        запустить «Только проверить».
+    </p>
+
+    {% if import_report and import_kind == "diary" %}
+        {% include "workshop_report.html" %}
+    {% endif %}
+</section>

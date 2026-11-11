@@ -1,4 +1,5 @@
 {% extends "main.html" %}
+{% load people %}
 
 {% block content %}
 <div class="daily-page">
@@ -10,12 +11,24 @@
         </div>
 
         <div class="page-head-actions">
+        <form class="group-search" method="get" action="{% url 'groups' %}" role="search">
+            <input type="hidden" name="date" value="{{ selected_date_iso }}">
+            <label for="group-search">Группа</label>
+            <input id="group-search" class="group-search-input" type="search"
+                   name="q" value="{{ q }}" maxlength="100"
+                   placeholder="Название или куратор…" autocomplete="off">
+            <button class="group-search-button" type="submit">Найти</button>
+            {% if q %}
+                <a class="group-search-reset" href="?date={{ selected_date_iso }}">Сбросить</a>
+            {% endif %}
+        </form>
+
         <nav class="date-nav" aria-label="Недели">
-            <a class="date-nav-link" href="?date={{ prev_week_iso }}">
+            <a class="date-nav-link" href="?date={{ prev_week_iso }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">
                 ← Неделя
             </a>
-            <a class="date-nav-link" href="{% url 'groups' %}">Сегодня</a>
-            <a class="date-nav-link" href="?date={{ next_week_iso }}">
+            <a class="date-nav-link" href="{% url 'groups' %}{% if q %}?q={{ q|urlencode }}{% endif %}">Сегодня</a>
+            <a class="date-nav-link" href="?date={{ next_week_iso }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">
                 Неделя →
             </a>
         </nav>
@@ -25,7 +38,7 @@
     <nav class="weekday-tabs" aria-label="Дни недели">
         {% for tab in week_tabs %}
             <a class="weekday-tab{% if tab.is_selected %} is-selected{% endif %}{% if tab.is_today %} is-today{% endif %}{% if tab.is_off %} is-off{% endif %}"
-               href="?date={{ tab.iso }}"
+               href="?date={{ tab.iso }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}"
                title="{{ tab.name }}, {{ tab.label }}"
                {% if tab.is_selected %}aria-current="page"{% endif %}>
                 <span class="tab-day">{{ tab.short }}</span>
@@ -33,6 +46,16 @@
             </a>
         {% endfor %}
     </nav>
+
+    {% if q %}
+        <p class="group-search-info">
+            {% if found_count %}
+                По запросу «{{ q }}» найдено групп: {{ found_count }}.
+            {% else %}
+                По запросу «{{ q }}» групп не найдено.
+            {% endif %}
+        </p>
+    {% endif %}
 
     {% if day_off %}
         <p class="day-off">{{ day_off }}</p>
@@ -48,9 +71,11 @@
                         </span>
 
                         <span class="daily-meta">
-                            {{ item.group.group_course }}
-                            ·
-                            {{ item.group.shift }}
+                            {% include "group_meta.html" with group=item.group %}
+                            <a class="card-link"
+                               href="{% url 'group_card' group_id=item.group.group_id %}">
+                                Профиль
+                            </a>
                             {% if user.is_staff %}
                                 ·
                                 <a class="card-link"
@@ -64,7 +89,7 @@
                     <p class="group-curator">
                         Куратор:
                         {% if item.group.group_curator %}
-                            <span class="group-curator-name">{{ item.group.group_curator.teacher_name }}</span>
+                            <span class="group-curator-name"><a href="{% url 'teacher_card' teacher_id=item.group.group_curator.pk %}">{{ item.group.group_curator.teacher_name|person }}</a></span>
                         {% else %}
                             <span class="group-curator-none">не назначен</span>
                         {% endif %}
@@ -99,7 +124,7 @@
 
                                 <div class="pair-teacher">
                                     {% if lesson %}
-                                        {{ lesson.teacher }}
+                                        {{ lesson.teacher|person }}
                                         {% if lesson.note %}
                                             <span class="pair-note">{{ lesson.note }}</span>
                                         {% endif %}
@@ -121,7 +146,7 @@
         {% if page_obj.has_other_pages %}
             <nav class="pagination" aria-label="Страницы списка групп">
                 {% if page_obj.has_previous %}
-                    <a href="?date={{ selected_date_iso }}&amp;page={{ page_obj.previous_page_number }}">
+                    <a href="?date={{ selected_date_iso }}&amp;page={{ page_obj.previous_page_number }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">
                         ← Назад
                     </a>
                 {% endif %}
@@ -134,14 +159,14 @@
                             {{ number }}
                         </span>
                     {% else %}
-                        <a href="?date={{ selected_date_iso }}&amp;page={{ number }}">
+                        <a href="?date={{ selected_date_iso }}&amp;page={{ number }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">
                             {{ number }}
                         </a>
                     {% endif %}
                 {% endfor %}
 
                 {% if page_obj.has_next %}
-                    <a href="?date={{ selected_date_iso }}&amp;page={{ page_obj.next_page_number }}">
+                    <a href="?date={{ selected_date_iso }}&amp;page={{ page_obj.next_page_number }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">
                         Вперёд →
                     </a>
                 {% endif %}

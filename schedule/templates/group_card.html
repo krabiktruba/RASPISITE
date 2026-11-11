@@ -1,0 +1,89 @@
+{% extends "main.html" %}
+{% load people %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Профиль группы</p>
+            <h1>{{ group.group_name }}</h1>
+        </div>
+
+        <div class="page-head-actions">
+            {% if from_users %}
+                <a class="date-nav-link" href="{% url 'group_edit' group_id=group.pk %}">Редактировать</a>
+            {% endif %}
+            <a class="date-nav-link" href="{% url 'group_schedule' group_id=group.pk %}">Расписание</a>
+        </div>
+    </header>
+
+    <dl class="profile-facts cols-3">
+        <div class="profile-fact">
+            <dt>Тег группы</dt>
+            <dd>
+                {% if group.group_tag %}
+                    {% include "profile_tag.html" with tag=group.group_tag prefix="g" %}
+                {% else %}
+                    <span class="users-hint">без тега</span>
+                {% endif %}
+            </dd>
+        </div>
+
+        <div class="profile-fact">
+            <dt>Куратор</dt>
+            <dd>
+                {% if curator %}
+                    <a href="{% url 'teacher_card' teacher_id=curator.pk %}">{{ curator.teacher_name }}</a>
+                {% else %}
+                    <span class="users-hint">не назначен</span>
+                {% endif %}
+            </dd>
+        </div>
+
+        <div class="profile-fact">
+            <dt>Курс и смена</dt>
+            <dd>{{ group.group_course_id }} курс<span class="profile-sep">|</span>{{ group.shift_id }} смена</dd>
+        </div>
+    </dl>
+
+    <div class="profile-sections">
+        <section class="profile-section">
+            <h2 class="profile-section-title">Студенты <span class="profile-count">{{ student_count }}</span></h2>
+
+            {% if not show_students %}
+                <p class="users-hint">Список студентов видят администратор и куратор группы.</p>
+            {% elif students %}
+                <ol class="profile-list">
+                    {% for item in students %}
+                        <li>
+                            <span class="num">{{ forloop.counter }}</span>
+                            <span class="main"><a href="{% url 'student_card' user_id=item.user.pk %}">{{ item.name|person }}</a></span>
+                        </li>
+                    {% endfor %}
+                </ol>
+            {% else %}
+                <p class="users-hint">В группе пока нет студентов.</p>
+            {% endif %}
+        </section>
+
+        <section class="profile-section">
+            <h2 class="profile-section-title">Пары <span class="profile-count">{{ pairs|length }}</span></h2>
+
+            {% if pairs %}
+                <ul class="profile-list">
+                    {% for pair in pairs %}
+                        <li>
+                            <span class="main">{{ pair.pair_name }}</span>
+                            <a href="{% url 'teacher_card' teacher_id=pair.teacher.pk %}">{{ pair.teacher.teacher_name|person }}</a>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="users-hint">Пар нет.</p>
+            {% endif %}
+        </section>
+    </div>
+
+</div>
+{% endblock %}

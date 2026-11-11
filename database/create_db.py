@@ -12,23 +12,18 @@ DB_NAME = "schedule_db"
 
 TABLES_SQL = [
     """
-    CREATE TABLE IF NOT EXISTS "TagType" (
-        tag_type_id SERIAL PRIMARY KEY,
-        tag_type_name VARCHAR(100) NOT NULL UNIQUE
+    CREATE TABLE IF NOT EXISTS "GroupTag" (
+        tag_id SERIAL PRIMARY KEY,
+        tag_name VARCHAR(100) NOT NULL UNIQUE,
+        tag_color VARCHAR(7) NOT NULL DEFAULT '#6b7280'
     );
     """,
 
     """
-    CREATE TABLE IF NOT EXISTS "Tag" (
+    CREATE TABLE IF NOT EXISTS "TeacherTag" (
         tag_id SERIAL PRIMARY KEY,
-        tag_type INT NOT NULL,
-        tag_name VARCHAR(100) NOT NULL,
-        tag_color VARCHAR(7) NOT NULL DEFAULT '#6b7280',
-
-        FOREIGN KEY (tag_type)
-            REFERENCES "TagType"(tag_type_id),
-
-        UNIQUE (tag_type, tag_name)
+        tag_name VARCHAR(100) NOT NULL UNIQUE,
+        tag_color VARCHAR(7) NOT NULL DEFAULT '#6b7280'
     );
     """,
 
@@ -39,7 +34,7 @@ TABLES_SQL = [
         teacher_name VARCHAR(150) NOT NULL,
 
         FOREIGN KEY (teacher_tag)
-            REFERENCES "Tag"(tag_id)
+            REFERENCES "TeacherTag"(tag_id)
     );
     """,
 
@@ -66,7 +61,7 @@ TABLES_SQL = [
         group_name VARCHAR(100) NOT NULL,
 
         FOREIGN KEY (group_tag)
-            REFERENCES "Tag"(tag_id),
+            REFERENCES "GroupTag"(tag_id),
 
         FOREIGN KEY (group_curator_id)
             REFERENCES "Teacher"(teacher_id),
@@ -82,15 +77,29 @@ TABLES_SQL = [
     """
     CREATE TABLE IF NOT EXISTS "Pairs" (
         pair_id SERIAL PRIMARY KEY,
-        "group" INT NOT NULL,
         teacher INT NOT NULL,
         pair_name VARCHAR(150) NOT NULL,
 
-        FOREIGN KEY ("group")
-            REFERENCES "Group"(group_id),
-
         FOREIGN KEY (teacher)
             REFERENCES "Teacher"(teacher_id)
+    );
+    """,
+
+    """
+    CREATE TABLE IF NOT EXISTS "PairGroup" (
+        pair_group_id SERIAL PRIMARY KEY,
+        pair_id INT NOT NULL,
+        group_id INT NOT NULL,
+
+        FOREIGN KEY (pair_id)
+            REFERENCES "Pairs"(pair_id)
+            ON DELETE CASCADE,
+
+        FOREIGN KEY (group_id)
+            REFERENCES "Group"(group_id)
+            ON DELETE CASCADE,
+
+        CONSTRAINT unique_pair_group UNIQUE (pair_id, group_id)
     );
     """,
 
@@ -152,6 +161,20 @@ TABLES_SQL = [
     """,
 
     """
+    CREATE TABLE IF NOT EXISTS "Semester" (
+        semester_id SERIAL PRIMARY KEY,
+        semester_number SMALLINT NOT NULL UNIQUE,
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+
+        CONSTRAINT semester_number_range
+            CHECK (semester_number BETWEEN 1 AND 8),
+
+        CONSTRAINT semester_dates_order CHECK (end_date >= start_date)
+    );
+    """,
+
+    """
     CREATE TABLE IF NOT EXISTS "BreakHours" (
         break_hours_id SERIAL PRIMARY KEY,
         shift INT NOT NULL,
@@ -173,6 +196,7 @@ TABLES_SQL = [
         change_id SERIAL PRIMARY KEY,
 
         calendar INT NOT NULL,
+        "group" INT NOT NULL,
         pair INT NOT NULL,
         old_pair_number INT,
 
@@ -195,6 +219,9 @@ TABLES_SQL = [
 
         FOREIGN KEY (calendar)
             REFERENCES "Calendar"(calendar_id),
+
+        FOREIGN KEY ("group")
+            REFERENCES "Group"(group_id),
 
         FOREIGN KEY (pair)
             REFERENCES "Pairs"(pair_id),

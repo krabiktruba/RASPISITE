@@ -1,0 +1,115 @@
+{% extends "main.html" %}
+{% load static %}
+{% load people %}
+
+{% block scripts %}{{ block.super }}<script src="{% static 'diary/diary.js' %}" defer></script>{% endblock %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Дневник группы</p>
+            <div class="page-head-line">
+                <h1><a class="page-head-link"
+                       href="{% url 'group_card' group_id=group.pk %}"
+                       title="Профиль группы">{{ group.group_name }}</a></h1>
+                {% include "tag_chip.html" with tag=group.group_tag %}
+                {% include "group_meta.html" with group=group %}
+            </div>
+        </div>
+
+        <div class="page-head-actions">
+            <a class="date-nav-link" href="{% url 'group_schedule' group_id=group.pk %}?date={{ week_date }}">Расписание группы</a>
+            <a class="date-nav-link" href="{% url 'diary_journal' %}?f=1&amp;week=1&amp;date={{ week_date }}&amp;group={{ group.pk }}">Журнал группы</a>
+
+            <nav class="date-nav" aria-label="Недели">
+                <a class="date-nav-link" href="?date={{ prev_week_iso }}">← Неделя</a>
+                <span class="date-nav-label">{{ week_label }}</span>
+                {% if not is_current_week %}
+                    <a class="date-nav-link" href="{% url 'diary_group' group_id=group.pk %}">Сегодня</a>
+                {% endif %}
+                <a class="date-nav-link" href="?date={{ next_week_iso }}">Неделя →</a>
+            </nav>
+        </div>
+    </header>
+
+    <section class="users-card person-card diary-wide">
+        {% if not rows %}
+            <p class="users-hint">В группе пока нет студентов.</p>
+        {% elif not has_lessons %}
+            <p class="users-hint">На этой неделе в группе нет занятий.</p>
+        {% else %}
+            <form method="post" class="diary-form" data-diary-form>
+                {% csrf_token %}
+
+                <div class="diary-toolbar">
+                    {% if can_edit %}
+                        <p class="users-hint">{{ input_hint }}. Enter — ячейка ниже.</p>
+                        <button class="user-filter-button" type="submit">Сохранить</button>
+                    {% else %}
+                        <p class="users-hint">Вы только смотрите: оценки ставит преподаватель занятия.</p>
+                    {% endif %}
+                </div>
+
+                <div class="diary-scroll">
+                    <table class="diary-grid" style="width: {{ table_width }}px">
+                        <colgroup>
+                            <col class="diary-col-student">
+                            {% for day in days %}{% for lesson in day.lessons %}<col class="diary-col-mark">{% endfor %}{% endfor %}
+                        </colgroup>
+                        <thead>
+                            <tr class="diary-row-day">
+                                <th rowspan="2" class="diary-student">Студент</th>
+                                {% for day in days %}
+                                    <th colspan="{{ day.lessons|length }}" class="diary-day{% if day.is_today %} is-today{% endif %}">
+                                        {{ day.name }} {{ day.label }}
+                                    </th>
+                                {% endfor %}
+                            </tr>
+                            <tr class="diary-row-lesson">
+                                {% for day in days %}
+                                    {% for lesson in day.lessons %}
+                                        <th class="diary-lesson-head{% if lesson.first_of_day %} is-first{% endif %}"
+                                            title="{{ lesson.subject }} — {{ lesson.teacher }}{% if lesson.note %} ({{ lesson.note }}){% endif %}">
+                                            <span class="diary-lesson-no">{{ lesson.number }} пара</span>
+                                            <span class="diary-lesson-text">{{ lesson.subject }}</span>
+                                        </th>
+                                    {% endfor %}
+                                {% endfor %}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in rows %}
+                                <tr>
+                                    <th scope="row" class="diary-student" title="{{ row.name }}">
+                                        <a href="{% url 'student_card' user_id=row.user.pk %}">{{ row.name|person }}</a>
+                                    </th>
+                                    {% for value in row.values %}
+                                        <td class="diary-cell{% if value.kind %} mark-{{ value.kind }}{% endif %}{% if value.first_of_day %} is-first{% endif %}">
+                                            {% if value.editable %}
+                                                <input class="diary-input{% if value.error %} is-invalid{% endif %}"
+                                                       type="text"
+                                                       name="{{ value.field }}"
+                                                       value="{{ value.text }}"
+                                                       data-diary-col="{{ value.column }}"
+                                                       maxlength="3"
+                                                       autocomplete="off"
+                                                       aria-label="Оценка: {{ row.name }}"
+                                                       {% if value.error %}title="{{ value.error }}"{% endif %}>
+                                            {% else %}
+                                                {{ value.text }}
+                                            {% endif %}
+                                        </td>
+                                    {% endfor %}
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </form>
+        {% endif %}
+    </section>
+
+</div>
+{% endblock %}

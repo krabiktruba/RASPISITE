@@ -8,8 +8,9 @@
               другое название;
     MOVE    — пара уходит на другую дату и другой номер.
 
-Правка находит нужное занятие по тройке «дата + пара + номер пары в этот
-день». Модуль не отрисовывает страницы: он лишь накладывает правки на
+Правка находит нужное занятие по четвёрке «дата + группа + пара + номер
+пары в этот день» (одна пара ведётся у нескольких групп, поэтому группа
+нужна). Модуль не отрисовывает страницы: он лишь накладывает правки на
 обычное расписание и проверяет, что преподаватель не окажется в двух местах.
 """
 
@@ -60,16 +61,16 @@ def load_changes(first, last):
             "calendar",
             "new_calendar",
             "new_teacher",
+            "group",
+            "group__shift",
             "pair",
             "pair__teacher",
-            "pair__group",
-            "pair__group__shift",
         )
     )
 
 
 def index_changes(changes, skip_change_id=None):
-    """{(исходная дата, pair_id): [правки]} — для быстрого поиска."""
+    """{(исходная дата, группа, pair_id): [правки]} — для быстрого поиска."""
     index = {}
 
     for change in changes:
@@ -77,19 +78,19 @@ def index_changes(changes, skip_change_id=None):
             continue
 
         index.setdefault(
-            (change.calendar.date, change.pair_id), []
+            (change.calendar.date, change.group_id, change.pair_id), []
         ).append(change)
 
     return index
 
 
-def find_change(index, day, pair_id, number):
-    """Правка, относящаяся к занятию (дата, пара, номер пары), или None.
+def find_change(index, day, group_id, pair_id, number):
+    """Правка, относящаяся к занятию (дата, группа, пара, номер), или None.
 
     Правка с точным номером важнее правки без номера (такие остались бы
     от ручного ввода в /admin/).
     """
-    candidates = index.get((day, pair_id), [])
+    candidates = index.get((day, group_id, pair_id), [])
 
     for change in candidates:
         if change.old_pair_number == number:
@@ -107,8 +108,9 @@ def find_change(index, day, pair_id, number):
 # ---------------------------------------------------------------------------
 
 def _lesson(subject, teacher, status="", note="", change=None,
-            editable=True, group=None, number=None):
+            editable=True, group=None, number=None, pair_id=None):
     return {
+        "pair_id": pair_id,
         "subject": subject,
         "teacher": teacher,
         "status": status,
@@ -227,16 +229,17 @@ def resolve_group_day(group_id, day, days_by_number, changes,
         if not FIRST_PAIR <= number <= LAST_PAIR:
             continue
 
-        change = find_change(index, day, record.pair_id, number)
+        change = find_change(index, day, group_id, record.pair_id, number)
         slots[number] = describe_original(record.pair, change)
         slots[number]["number"] = number
+        slots[number]["pair_id"] = record.pair_id
 
     # Перенесённые на эту дату пары своей группы
     for change in changes:
         if change.pk == skip_change_id or not _is_move_target(change, day):
             continue
 
-        if change.pair.group_id != group_id:
+        if change.group_id != group_id:
             continue
 
         number = change.new_pair_number
@@ -244,6 +247,7 @@ def resolve_group_day(group_id, day, days_by_number, changes,
         if FIRST_PAIR <= number <= LAST_PAIR:
             slots[number] = describe_moved_in(change)
             slots[number]["number"] = number
+            slots[number]["pair_id"] = change.pair_id
 
     return slots
 
@@ -298,7 +302,7 @@ def teacher_lessons(teacher_id, dates, base_records, changes):
     for day in dates:
         for record in by_weekday.get(day.isoweekday(), []):
             change = find_change(
-                index, day, record.pair_id, record.pair_number
+                index, day, record.group_id, record.pair_id, record.pair_number
             )
             result[day].append(_teacher_lesson(record, change, teacher_id))
 
@@ -313,6 +317,7 @@ def teacher_lessons(teacher_id, dates, base_records, changes):
             and original_day in result
         ):
             slots = Day.objects.filter(
+                group_id=change.group_id,
                 pair_id=change.pair_id,
                 weekday_id=original_day.isoweekday(),
                 pair_number__range=(FIRST_PAIR, LAST_PAIR),
@@ -342,7 +347,7 @@ def teacher_lessons(teacher_id, dates, base_records, changes):
             and change.new_calendar.date in result
         ):
             lesson = describe_moved_in(change)
-            lesson["group"] = change.pair.group
+            lesson["group"] = change.group
             lesson["number"] = change.new_pair_number
             result[change.new_calendar.date].append(lesson)
 
@@ -369,7 +374,9 @@ def teacher_conflict(teacher_id, day, number, changes, skip_change_id=None):
     ).select_related("group", "pair")
 
     for record in records:
-        change = find_change(index, day, record.pair_id, number)
+        change = find_change(
+            index, day, record.group_id, record.pair_id, number
+        )
 
         if change is not None:
             if change.change_type in (CANCEL, MOVE):
@@ -396,6 +403,7 @@ def teacher_conflict(teacher_id, day, number, changes, skip_change_id=None):
                 or (
                     change.old_pair_number is None
                     and Day.objects.filter(
+                        group_id=change.group_id,
                         pair_id=change.pair_id,
                         weekday_id=day.isoweekday(),
                         pair_number=number,
@@ -404,7 +412,7 @@ def teacher_conflict(teacher_id, day, number, changes, skip_change_id=None):
             )
 
             if same_slot:
-                return change.pair.group.group_name
+                return change.group.group_name
 
         # Сюда уже перенесена его пара
         if (
@@ -412,6 +420,6 @@ def teacher_conflict(teacher_id, day, number, changes, skip_change_id=None):
             and change.new_pair_number == number
             and change.pair.teacher_id == teacher_id
         ):
-            return change.pair.group.group_name
+            return change.group.group_name
 
     return None

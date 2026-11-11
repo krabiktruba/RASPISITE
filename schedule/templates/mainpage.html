@@ -39,7 +39,7 @@
             <h1 class="hero-title" aria-label="RASPISITE"><span>R</span><span>A</span><span>S</span><span>P</span><span>I</span><span>S</span><span>I</span><span>T</span><span>E</span></h1>
             <p class="hero-sub">ЕКЕБ</p>
 
-            <!-- Выбор раздела. «Дневник» появится позже, пока это пометка -->
+            <!-- Выбор раздела: расписание или дневник -->
             <nav class="hero-choice" aria-label="Что открыть">
                 <a class="hero-choice-link"
                    href="{% if my_group_id %}{% url 'group_schedule' group_id=my_group_id %}{% else %}{% url 'groups' %}{% endif %}">
@@ -47,11 +47,10 @@
                     <span class="hero-choice-note">пары и календарь</span>
                 </a>
 
-                <span class="hero-choice-link is-soon" aria-disabled="true"
-                      title="Дневник появится позже">
+                <a class="hero-choice-link" href="{% url 'diary_home' %}">
                     <span class="hero-choice-name">Дневник</span>
-                    <span class="hero-choice-note">оценки · скоро</span>
-                </span>
+                    <span class="hero-choice-note">оценки и посещаемость</span>
+                </a>
             </nav>
         </div>
 

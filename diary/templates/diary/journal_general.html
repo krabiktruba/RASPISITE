@@ -1,0 +1,82 @@
+{% extends "main.html" %}
+{% load static %}
+
+{% block scripts %}{{ block.super }}<script src="{% static 'diary/journal.js' %}" defer></script>{% endblock %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Оценки по группам</p>
+            <h1>ОБЩИЙ ЖУРНАЛ</h1>
+        </div>
+
+        <div class="page-head-actions">
+            <a class="date-nav-link" href="{% url 'diary_home' %}">Дневник</a>
+            <a class="date-nav-link" href="{% url 'diary_journal' %}">Журнал</a>
+
+            {% if week_mode %}
+                <nav class="date-nav" aria-label="Недели">
+                    <a class="date-nav-link" href="{{ prev_url }}">← Неделя</a>
+                    <span class="date-nav-label">{{ period_label }}</span>
+                    {% if not is_current_week %}
+                        <a class="date-nav-link" href="{{ today_url }}">Сегодня</a>
+                    {% endif %}
+                    <a class="date-nav-link" href="{{ next_url }}">Неделя →</a>
+                </nav>
+            {% else %}
+                <span class="date-nav-label">{{ period_label }}</span>
+            {% endif %}
+        </div>
+    </header>
+
+    {% include "diary/journal_filters.html" %}
+
+    {% for note in notes %}
+        <p class="message warning">{{ note }}</p>
+    {% endfor %}
+
+    <section class="users-card person-card journal-card">
+        {% if not groups %}
+            <p class="users-hint">У вас пока нет групп для журнала.</p>
+        {% else %}
+            <table class="diary-grid journal-general-grid">
+                <thead>
+                    <tr>
+                        <th class="journal-general-name">Группа</th>
+                        <th>Студентов</th>
+                        <th>Занятий</th>
+                        <th>Оценок</th>
+                        <th>Средний балл</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in group_stats %}
+                        <tr>
+                            <th scope="row" class="journal-general-name">
+                                <a href="{{ item.url }}" title="Журнал группы за этот период">{{ item.group.group_name }}</a>
+                            </th>
+                            <td>{{ item.students }}</td>
+                            <td>{{ item.lessons }}</td>
+                            <td>{{ item.scores }}</td>
+                            <td>{{ item.average }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <th scope="row" class="journal-general-name">Всего</th>
+                        <td>{{ totals.students }}</td>
+                        <td></td>
+                        <td>{{ totals.scores }}</td>
+                        <td>{{ totals.average }}</td>
+                    </tr>
+                </tfoot>
+            </table>
+            <p class="users-hint journal-general-hint">Средний балл считается по оценкам; «Н» и «Б» в него не входят. Название группы открывает её журнал за тот же период.</p>
+        {% endif %}
+    </section>
+
+</div>
+{% endblock %}

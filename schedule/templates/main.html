@@ -6,9 +6,12 @@
 
     <title>RASPISITE</title>
 
+    <script>document.documentElement.className += " js";</script>
+
     {% load static %}
     <link rel="stylesheet" href="{% static 'style.css' %}">
     <link rel="stylesheet" href="{% url 'tag_styles' %}">
+    <script src="{% static 'nav.js' %}" defer></script>
     {% block scripts %}<script src="{% static 'filter.js' %}" defer></script>{% endblock %}
     {% block head %}{% endblock %}
 </head>
@@ -22,7 +25,14 @@
                 RASPISITE<span class="brand-dot">.</span>
             </a>
 
-            <nav class="main-nav">
+            {% if user.is_authenticated %}
+                <button type="button" class="nav-toggle" data-nav-toggle
+                        aria-controls="main-nav" aria-expanded="false">
+                    Меню
+                </button>
+            {% endif %}
+
+            <nav class="main-nav" id="main-nav" data-nav>
                 {% if user.is_authenticated %}
                     {% if my_group_id %}
                         <a href="{% url 'group_schedule' group_id=my_group_id %}" class="nav-link">
@@ -42,6 +52,14 @@
                     <a href="{% url 'calendar' %}" class="nav-link">
                         Календарь
                     </a>
+                    <a href="{% url 'diary_home' %}" class="nav-link">
+                        Дневник
+                    </a>
+                    {% if my_card_id %}
+                        <a href="{% url 'student_card' user_id=my_card_id %}" class="nav-link">
+                            Мой профиль
+                        </a>
+                    {% endif %}
                     {% if user.is_staff %}
                         <a href="{% url 'users' %}" class="nav-link">
                             Пользователи
@@ -51,17 +69,25 @@
                         </a>
                     {% endif %}
 
+                    <p class="nav-user">{{ user.get_username }}</p>
+
                     <form class="nav-logout" method="post"
                           action="{% url 'logout' %}">
                         {% csrf_token %}
-                        <button type="submit" class="nav-link nav-button">
-                            Выйти ({{ user.get_username }})
+                        <button type="submit" class="nav-link nav-button"
+                                title="{{ user.get_username }}">
+                            Выйти
                         </button>
                     </form>
                 {% else %}
                     <a href="{% url 'login' %}" class="nav-link">Вход</a>
                 {% endif %}
             </nav>
+
+            {% if nav_back_url %}
+                <a href="{{ nav_back_url }}" class="nav-link nav-back" data-back
+                   title="Вернуться на предыдущую страницу">← Назад</a>
+            {% endif %}
 
         </div>
     </header>

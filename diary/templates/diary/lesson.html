@@ -1,0 +1,94 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Журнал занятия</p>
+            <h1>{{ lesson.subject }}</h1>
+        </div>
+
+        <div class="page-head-actions">
+            <a class="date-nav-link" href="{{ back_url }}">← К занятиям</a>
+            {% if show_group_link %}
+                <a class="date-nav-link" href="{{ group_url }}">Дневник группы</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <section class="users-card person-card">
+        <dl class="card-facts">
+            <div class="card-fact">
+                <dt>Группа</dt>
+                <dd>{{ lesson.group.group_name }}</dd>
+            </div>
+            <div class="card-fact">
+                <dt>Дата</dt>
+                <dd>{{ day_label }}, пара {{ lesson.number }}</dd>
+            </div>
+            <div class="card-fact">
+                <dt>Преподаватель</dt>
+                <dd>{{ lesson.teacher }}{% if lesson.status_label %} <span class="role-badge">{{ lesson.status_label }}</span>{% endif %}</dd>
+            </div>
+        </dl>
+    </section>
+
+    <section class="users-card person-card">
+        {% if is_future %}
+            <p class="users-hint">Занятие ещё не прошло: оценки за будущие даты ставить нельзя.</p>
+        {% elif not may_grade %}
+            <p class="users-hint">Вы только смотрите журнал: оценки ставит преподаватель занятия.</p>
+        {% else %}
+            <p class="users-hint">{{ input_hint }}.</p>
+        {% endif %}
+
+        {% if rows %}
+            <form method="post" class="diary-form">
+                {% csrf_token %}
+
+                <table class="users-table diary-table">
+                    <thead>
+                        <tr>
+                            <th>Студент</th>
+                            <th class="diary-col-mark">Оценка</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in rows %}
+                            <tr>
+                                <th scope="row">{{ row.name }}</th>
+                                <td class="diary-col-mark">
+                                    {% if editable %}
+                                        <input class="diary-input{% if row.error %} is-invalid{% endif %}"
+                                               type="text"
+                                               name="s_{{ row.id }}"
+                                               value="{{ row.value }}"
+                                               maxlength="3"
+                                               autocomplete="off"
+                                               aria-label="Оценка: {{ row.name }}">
+                                        {% if row.error %}
+                                            <span class="diary-input-error">{{ row.error }}</span>
+                                        {% endif %}
+                                    {% else %}
+                                        {{ row.value|default:"—" }}
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+
+                {% if editable %}
+                    <p class="diary-actions">
+                        <button class="user-filter-button" type="submit">Сохранить</button>
+                    </p>
+                {% endif %}
+            </form>
+        {% else %}
+            <p class="users-hint">В группе пока нет студентов.</p>
+        {% endif %}
+    </section>
+
+</div>
+{% endblock %}

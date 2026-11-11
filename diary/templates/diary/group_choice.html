@@ -1,0 +1,17 @@
+{# Плитки групп: название и тег. Отдельной страницы выбора студента нет — студенты внутри дневника группы. #}
+{% if groups %}
+    <ul class="diary-group-grid" aria-label="{{ groups_title }}">
+        {% for group in groups %}
+            <li>
+                <a class="diary-group-tile" href="{% url 'diary_group' group_id=group.pk %}">
+                    <span class="diary-group-name">{{ group.group_name }}</span>
+                    {% include "tag_chip.html" with tag=group.group_tag %}
+                </a>
+            </li>
+        {% endfor %}
+    </ul>
+{% elif q or tag %}
+    <p class="users-hint diary-choice-empty">По выбранным условиям групп не нашлось.</p>
+{% else %}
+    <p class="users-hint diary-choice-empty">{% if role == ROLE_ADMIN %}Групп пока нет.{% else %}За вами пока не закреплено ни одной группы.{% endif %}</p>
+{% endif %}

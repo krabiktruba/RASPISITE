@@ -3,6 +3,7 @@ from datetime import date, time
 from io import StringIO
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote, urlencode
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
@@ -17,6 +18,9 @@ from django.db import connection
 from django.test import Client, TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import NoReverseMatch, reverse
+from django.utils import timezone
+
+from diary.models import Mark
 
 from .access import (
     full_name,
@@ -29,6 +33,8 @@ from .access import (
     user_role,
 )
 from .forms import MAX_FAILED_LOGINS
+from .group_names import check_group_name, is_standard_name
+from .names import person_html, short_name, split_name
 from .gmail import normalize_gmail
 from .tags import (
     TAG_COLOR_DEFAULT,
@@ -46,12 +52,14 @@ from .models import (
     Day,
     Group,
     Pair,
+    PairGroup,
     Profile,
     ScheduleChange,
+    Semester,
     Shift,
     StudyHours,
-    Tag,
-    TagType,
+    GroupTag,
+    TeacherTag,
     Teacher,
     Weekday,
 )
@@ -67,6 +75,14 @@ def fake_today(value):
         "schedule.views.timezone.localdate",
         return_value=value,
     )
+
+
+def make_pair(group, teacher, name):
+    """Пара, привязанная к группе (пары самостоятельные, связь отдельная)."""
+    pair = Pair.objects.create(teacher=teacher, pair_name=name)
+    PairGroup.objects.create(pair=pair, group=group)
+
+    return pair
 
 
 def make_teacher(name, email):
@@ -109,11 +125,7 @@ class BaseTestCase(TestCase):
             shift=cls.shift,
         )
 
-        pair = cls.pair = Pair.objects.create(
-            group=cls.group,
-            teacher=cls.teacher,
-            pair_name="Математика",
-        )
+        pair = cls.pair = make_pair(cls.group, cls.teacher, "Математика")
 
         # Понедельник, первая пара
         Day.objects.create(
@@ -276,9 +288,11 @@ class LoginTests(TestCase):
                 self.assertTrue(self.is_logged_in())
 
     def test_not_gmail_is_rejected_even_with_right_password(self):
-        get_user_model().objects.create_user("student", password=PASSWORD)
+        get_user_model().objects.create_user(
+            "student@mail.ru", password=PASSWORD
+        )
 
-        response = self.login("student")
+        response = self.login("student@mail.ru")
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Вход возможен только с почтой Gmail")
@@ -694,19 +708,18 @@ class RolesTests(BaseTestCase):
 
     def test_admin_sets_teacher_role(self):
         self.client.force_login(self.admin)
-        free = Teacher.objects.create(teacher_name="Свободный С. С.")
 
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.user.pk,
             "role": ROLE_TEACHER,
-            "teacher": free.pk,
         })
 
         user = get_user_model().objects.get(pk=self.user.pk)
 
         self.assertEqual(user_role(user), ROLE_TEACHER)
-        self.assertEqual(own_teacher_id(user), free.pk)
+        self.assertIsNotNone(own_teacher_id(user))
+        self.assertNotEqual(own_teacher_id(user), self.teacher.pk)
         self.assertFalse(user.is_staff)
 
     def test_teacher_role_without_choice_creates_teacher_from_name(self):
@@ -716,10 +729,9 @@ class RolesTests(BaseTestCase):
         self.user.save()
 
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.user.pk,
             "role": ROLE_TEACHER,
-            "teacher": "",
         })
 
         user = get_user_model().objects.get(pk=self.user.pk)
@@ -728,11 +740,12 @@ class RolesTests(BaseTestCase):
         self.assertEqual(teacher.teacher_name, "Сидоров Сидор")
         self.assertIn(teacher, real_teachers())
 
-    def test_teacher_of_another_user_cannot_be_taken(self):
+    def test_teacher_field_is_ignored(self):
+        """Привязка к старому преподавателю убрана: поле игнорируется."""
         self.client.force_login(self.admin)
 
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.user.pk,
             "role": ROLE_TEACHER,
             "teacher": self.teacher.pk,
@@ -747,7 +760,7 @@ class RolesTests(BaseTestCase):
         self.client.force_login(self.admin)
 
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.user.pk,
             "role": ROLE_ADMIN,
         })
@@ -756,7 +769,7 @@ class RolesTests(BaseTestCase):
         self.assertTrue(user.is_staff)
 
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.user.pk,
             "role": "student",
         })
@@ -772,12 +785,12 @@ class RolesTests(BaseTestCase):
         self.client.force_login(self.admin)
 
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.admin.pk,
             "role": "student",
         })
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": superuser.pk,
             "role": "student",
         })
@@ -793,7 +806,7 @@ class RolesTests(BaseTestCase):
         self.client.force_login(self.user)
 
         response = self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.user.pk,
             "role": ROLE_ADMIN,
         })
@@ -868,17 +881,13 @@ class GroupEditTests(BaseTestCase):
         self.client.post(self.url(), {})
         self.assertEqual(Day.objects.filter(group=self.group).count(), 0)
 
-    def test_teacher_cannot_be_in_two_places(self):
+    def test_teacher_in_two_places_is_saved_with_a_warning(self):
         other_group = Group.objects.create(
             group_name="Б-01",
             group_course=self.course,
             shift=self.shift,
         )
-        other_pair = Pair.objects.create(
-            group=other_group,
-            teacher=self.teacher,
-            pair_name="Физика",
-        )
+        other_pair = make_pair(other_group, self.teacher, "Физика")
         Day.objects.create(
             group=other_group,
             pair=other_pair,
@@ -889,15 +898,66 @@ class GroupEditTests(BaseTestCase):
         self.client.force_login(self.admin)
         response = self.client.post(self.url(), {
             "cell_2_2": self.pair.pk,
-        })
+        }, follow=True)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "уже ведёт занятие")
-        self.assertFalse(
+        self.assertContains(response, "Расписание группы сохранено.")
+        self.assertContains(response, "Совпадение у преподавателя")
+        self.assertContains(response, "в это же время ведёт занятие")
+        self.assertContains(response, "Б-01")
+        self.assertTrue(
             Day.objects.filter(
                 group=self.group, weekday_id=2, pair_number=2
             ).exists()
         )
+
+    def test_editor_offers_only_attached_pairs(self):
+        other_group = Group.objects.create(
+            group_name="Б-01", group_course=self.course, shift=self.shift,
+        )
+        make_pair(other_group, self.teacher, "Физика")
+        self.client.force_login(self.admin)
+
+        response = self.client.get(self.url())
+
+        self.assertEqual(
+            [pair.pair_name for pair in response.context["pair_options"]],
+            ["Математика"],
+        )
+        self.assertEqual(response.context["attached_count"], 1)
+
+    def test_shared_pair_can_stand_in_two_groups(self):
+        other_group = Group.objects.create(
+            group_name="Б-01", group_course=self.course, shift=self.shift,
+        )
+        PairGroup.objects.create(pair=self.pair, group=other_group)
+        self.client.force_login(self.admin)
+
+        self.client.post(self.url(), {"cell_3_1": self.pair.pk})
+        self.client.post(
+            reverse("group_edit", args=[other_group.pk]),
+            {"cell_3_1": self.pair.pk},
+        )
+
+        self.assertEqual(Day.objects.filter(pair=self.pair, weekday_id=3).count(), 2)
+
+    def test_group_without_pairs_explains_what_to_do(self):
+        lonely = Group.objects.create(
+            group_name="В-01", group_course=self.course, shift=self.shift,
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("group_edit", args=[lonely.pk]))
+
+        self.assertContains(response, "не привязано ни одной пары")
+
+    def test_unattached_pair_still_in_schedule_stays_in_list(self):
+        PairGroup.objects.all().delete()
+        self.client.force_login(self.admin)
+
+        response = self.client.get(self.url())
+
+        self.assertEqual(len(response.context["pair_options"]), 1)
+        self.assertContains(response, "(не привязана)")
 
     def test_foreign_pair_is_rejected(self):
         other_group = Group.objects.create(
@@ -905,11 +965,7 @@ class GroupEditTests(BaseTestCase):
             group_course=self.course,
             shift=self.shift,
         )
-        foreign = Pair.objects.create(
-            group=other_group,
-            teacher=Teacher.objects.create(teacher_name="Сидоров С. С."),
-            pair_name="Химия",
-        )
+        foreign = make_pair(other_group, Teacher.objects.create(teacher_name="Сидоров С. С."), "Химия")
 
         self.client.force_login(self.admin)
         response = self.client.post(self.url(), {
@@ -966,10 +1022,12 @@ class NewUserCreateTests(BaseTestCase):
 
     def test_admin_creates_student(self):
         response = self.post_user()
-
-        self.assertRedirects(response, reverse("users"))
-
         student = self.get_user()
+
+        # После создания список открывается с подсветкой нового пользователя
+        self.assertRedirects(
+            response, f"{reverse('users')}?new={student.pk}"
+        )
         self.assertTrue(student.check_password(STUDENT_PASSWORD))
         self.assertFalse(student.is_staff)
         self.assertEqual(student.last_name, "Иванов")
@@ -1027,9 +1085,9 @@ class NewUserCreateTests(BaseTestCase):
             group="",
         )
 
-        self.assertRedirects(response, reverse("users"))
-
         user = self.get_user("petrov77@gmail.com")
+
+        self.assertRedirects(response, f"{reverse('users')}?new={user.pk}")
         self.assertEqual(user_role(user), ROLE_TEACHER)
         self.assertFalse(user.is_staff)
         self.assertIsNone(user.profile.group_id)
@@ -1236,19 +1294,25 @@ class NewUserCreateTests(BaseTestCase):
         self.assertContains(page, "А-01 · куратор: Иванов И. И.")
         self.assertContains(page, "Б-02 · без куратора")
 
-    def test_page_number_is_kept_in_redirect(self):
-        response = self.post_user(page="1")
+    def test_redirect_shows_the_new_user(self):
+        response = self.post_user(page="3")
 
-        self.assertRedirects(response, reverse("users") + "?page=1")
+        self.assertRedirects(
+            response, reverse("users") + f"?new={self.get_user().pk}"
+        )
 
     # --- список пользователей --------------------------------------------
 
-    def test_users_table_shows_full_name(self):
+    def test_users_table_shows_short_name_with_full_name_on_hover(self):
         self.post_user()
 
         page = self.client.get(reverse("users"))
 
-        self.assertContains(page, "Иванов Иван Иванович")
+        self.assertContains(
+            page,
+            '<span class="person-name" title="Иванов Иван Иванович">'
+            'Иванович И. И.</span>',
+        )
         self.assertContains(page, "ivanov77@gmail.com")
 
     # --- доступ --------------------------------------------------------------
@@ -1288,7 +1352,7 @@ class StudentGroupTests(BaseTestCase):
 
     def change_group(self, user, group_value, **extra):
         return self.client.post(reverse("users"), {
-            "action": "set_group",
+            "action": "save_user",
             "user_id": user.pk,
             "group": group_value,
             **extra,
@@ -1333,16 +1397,15 @@ class StudentGroupTests(BaseTestCase):
         self.change_group(self.user, self.group.pk)
 
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.user.pk,
             "role": ROLE_TEACHER,
-            "teacher": self.teacher.pk,
         })
         self.assertIsNone(self.fresh(self.user).profile.group_id)
 
         # Возврат в студенты не восстанавливает прежнюю группу
         self.client.post(reverse("users"), {
-            "action": "set_role",
+            "action": "save_user",
             "user_id": self.user.pk,
             "role": "student",
         })
@@ -1553,7 +1616,7 @@ class WorkshopNoStudentsTests(BaseTestCase):
             "student-username": "sidorov77@gmail.com",
             "student-group": self.group.pk,
             "student-password": STUDENT_PASSWORD,
-        })
+        }, follow=True)
 
         self.assertEqual(get_user_model().objects.count(), before)
 
@@ -1564,7 +1627,7 @@ class WorkshopNoStudentsTests(BaseTestCase):
             "action": "add_teacher",
             "teacher-teacher_name": "Новый Н. Н.",
             "teacher-teacher_tag": "",
-        })
+        }, follow=True)
 
         self.assertEqual(Teacher.objects.count(), before)
 
@@ -1610,14 +1673,16 @@ class WorkshopLayoutTests(BaseTestCase):
         data = html.index("Импорт и экспорт")
         groups = html.index("<h2>Группы</h2>")
         pairs = html.index("<h2>Пары</h2>")
-        tags = html.index("<h2>Теги</h2>")
-        tag_types = html.index("<h2>Типы тегов</h2>")
+        tags = html.index("<h2>Теги групп</h2>")
+        teacher_tags = html.index("<h2>Теги преподавателей</h2>")
 
         self.assertLess(bells, data)
         self.assertLess(data, groups)
         self.assertLess(groups, pairs)
         self.assertLess(pairs, tags)
-        self.assertLess(tags, tag_types)
+        self.assertLess(tags, teacher_tags)
+        self.assertLess(teacher_tags, html.index("<h2>Семестры</h2>"))
+        self.assertNotIn("Типы тегов", html)
 
 
 class TagColorHelpersTests(TestCase):
@@ -1665,89 +1730,108 @@ class TagColorTests(BaseTestCase):
 
     def setUp(self):
         self.client.force_login(self.admin)
-        self.tag_type = TagType.objects.create(tag_type_name="Отделение")
 
     def add_tag(self, **fields):
         data = {
-            "action": "add_tag",
-            "tag-tag_type": self.tag_type.pk,
-            "tag-tag_name": "Очное",
+            "action": "add_group_tag",
+            "group_tag-tag_name": "Очное",
         }
         data.update(fields)
 
-        return self.client.post(reverse("workshop"), data)
+        return self.client.post(reverse("workshop"), data, follow=True)
 
     def test_new_tag_has_default_color(self):
-        tag = Tag.objects.create(tag_type=self.tag_type, tag_name="Очное")
+        tag = GroupTag.objects.create(tag_name="Очное")
 
         self.assertEqual(tag.tag_color, TAG_COLOR_DEFAULT)
-        self.assertEqual(tag.full_name, "Отделение: Очное")
+        self.assertEqual(tag.full_name, "Очное")
 
     def test_form_has_color_picker_without_javascript(self):
         page = self.client.get(reverse("workshop"))
 
         self.assertContains(page, 'type="color"')
         self.assertContains(page, "Цвет тега")
-        # Встроенных скриптов нет; подключён только внешний filter.js
-        # (предпросмотр цвета), выбор цвета работает и без него
-        self.assertNotContains(page, "<script>")
+        # Встроенный скрипт один — общий для всех страниц (класс «js» в шапке,
+        # main.html); подключён только внешний filter.js (предпросмотр цвета),
+        # выбор цвета работает и без него
+        self.assertContains(page, "<script>", count=1)
 
     def test_tag_is_added_with_chosen_color(self):
-        response = self.add_tag(**{"tag-tag_color": "#FF0000"})
+        response = self.add_tag(**{"group_tag-tag_color": "#FF0000"})
 
         self.assertContains(response, "Запись добавлена.")
         self.assertEqual(
-            Tag.objects.get(tag_name="Очное").tag_color, "#ff0000"
+            GroupTag.objects.get(tag_name="Очное").tag_color, "#ff0000"
         )
 
     def test_tag_without_color_gets_default(self):
         self.add_tag()
 
         self.assertEqual(
-            Tag.objects.get(tag_name="Очное").tag_color, TAG_COLOR_DEFAULT
+            GroupTag.objects.get(tag_name="Очное").tag_color, TAG_COLOR_DEFAULT
         )
 
     def test_bad_colors_are_rejected(self):
         for bad in ("red", "#12345", "#gggggg", "#ff0000;}"):
             with self.subTest(bad=bad):
-                response = self.add_tag(**{"tag-tag_color": bad})
+                response = self.add_tag(**{"group_tag-tag_color": bad})
 
                 self.assertContains(response, "Проверьте заполненные поля.")
 
-        self.assertFalse(Tag.objects.exists())
+        self.assertFalse(GroupTag.objects.exists())
 
     def test_color_can_be_changed(self):
-        tag = Tag.objects.create(tag_type=self.tag_type, tag_name="Очное")
+        tag = GroupTag.objects.create(tag_name="Очное")
 
         response = self.client.post(reverse("workshop"), {
             "action": "update_item",
-            "edit": "tag",
+            "edit": "group_tag",
             "item": tag.pk,
-            "tag-tag_type": self.tag_type.pk,
-            "tag-tag_name": "Очное",
-            "tag-tag_color": "#00AA55",
-        })
+            "group_tag-tag_name": "Очное",
+            "group_tag-tag_color": "#00AA55",
+        }, follow=True)
 
         self.assertContains(response, "Изменения сохранены")
         tag.refresh_from_db()
         self.assertEqual(tag.tag_color, "#00aa55")
 
-    def test_tag_lists_show_type_and_name(self):
-        Tag.objects.create(tag_type=self.tag_type, tag_name="Очное")
+    def test_tag_lists_show_only_the_name(self):
+        GroupTag.objects.create(tag_name="Очное")
 
         page = self.client.get(reverse("workshop"))
 
-        self.assertContains(page, "Отделение: Очное")
+        self.assertContains(page, "Очное")
+        self.assertNotContains(page, "Отделение: Очное")
+
+    def test_teacher_tag_is_added_with_its_own_color(self):
+        response = self.client.post(reverse("workshop"), {
+            "action": "add_teacher_tag",
+            "teacher_tag-tag_name": "Высшая",
+            "teacher_tag-tag_color": "#00AA55",
+        }, follow=True)
+
+        self.assertContains(response, "Запись добавлена.")
+        self.assertEqual(
+            TeacherTag.objects.get(tag_name="Высшая").tag_color, "#00aa55"
+        )
+        self.assertFalse(GroupTag.objects.exists())
 
     # --- tags.css -------------------------------------------------------------
 
     def test_stylesheet_has_rule_for_each_used_color(self):
-        Tag.objects.create(
-            tag_type=self.tag_type, tag_name="Очное", tag_color="#ffee00"
+        GroupTag.objects.create(
+            tag_name="Очное", tag_color="#ffee00"
         )
-        Tag.objects.create(
-            tag_type=self.tag_type, tag_name="Заочное", tag_color="#3655d9"
+        GroupTag.objects.create(
+            tag_name="Заочное", tag_color="#3655d9"
         )
+
+        response = self.client.get(reverse("tag_styles"))
+        TeacherTag.objects.create(tag_name="Высшая", tag_color="#12ab34")
+        css = self.client.get(reverse("tag_styles")).content.decode()
+
+        # Цвета и тегов групп, и тегов преподавателей
+        self.assertIn("tag-c-12ab34", css)
 
         response = self.client.get(reverse("tag_styles"))
         css = response.content.decode()
@@ -1765,10 +1849,9 @@ class TagColorTests(BaseTestCase):
         )
 
     def test_stylesheet_ignores_broken_color_in_database(self):
-        Tag.objects.create(
-            tag_type=self.tag_type,
+        GroupTag.objects.create(
             tag_name="Плохой",
-            tag_color="x;}body{display:none",
+            tag_color="x;}body",
         )
 
         css = self.client.get(reverse("tag_styles")).content.decode()
@@ -1790,12 +1873,11 @@ class TagChipTests(BaseTestCase):
 
     def setUp(self):
         self.client.force_login(self.user)
-        tag_type = TagType.objects.create(tag_type_name="Отделение")
-        self.group_tag = Tag.objects.create(
-            tag_type=tag_type, tag_name="Очное", tag_color="#ff0000"
+        self.group_tag = GroupTag.objects.create(
+            tag_name="Очное", tag_color="#ff0000"
         )
-        self.teacher_tag = Tag.objects.create(
-            tag_type=tag_type, tag_name="Высшая", tag_color="#00aa55"
+        self.teacher_tag = TeacherTag.objects.create(
+            tag_name="Высшая", tag_color="#00aa55"
         )
 
     def test_group_tag_on_groups_page(self):
@@ -1806,7 +1888,7 @@ class TagChipTests(BaseTestCase):
             page = self.client.get(reverse("groups"))
 
         self.assertContains(page, 'class="tag-chip tag-c-ff0000"')
-        self.assertContains(page, 'title="Отделение: Очное"')
+        self.assertContains(page, 'title="Очное"')
         self.assertContains(page, ">Очное</span>")
 
     def test_group_tag_on_group_schedule_page(self):
@@ -1819,7 +1901,7 @@ class TagChipTests(BaseTestCase):
         )
 
         self.assertContains(page, 'class="tag-chip tag-c-ff0000"')
-        self.assertContains(page, 'title="Отделение: Очное"')
+        self.assertContains(page, 'title="Очное"')
 
     def test_teacher_tag_next_to_teacher(self):
         self.teacher.teacher_tag = self.teacher_tag
@@ -1831,7 +1913,7 @@ class TagChipTests(BaseTestCase):
             )
 
         self.assertContains(page, 'class="tag-chip tag-c-00aa55"')
-        self.assertContains(page, 'title="Отделение: Высшая"')
+        self.assertContains(page, 'title="Высшая"')
 
     def test_no_chip_without_tag(self):
         with fake_today(MONDAY):
@@ -1875,15 +1957,14 @@ class TeacherTagAssignTests(BaseTestCase):
 
     def setUp(self):
         self.client.force_login(self.admin)
-        tag_type = TagType.objects.create(tag_type_name="Отделение")
-        self.tag = Tag.objects.create(tag_type=tag_type, tag_name="Высшая")
+        self.tag = TeacherTag.objects.create(tag_name="Высшая")
         self.teacher_user = get_user_model().objects.get(
             username="teacherivanov@gmail.com"
         )
 
     def post_tag(self, user, tag):
         return self.client.post(reverse("users"), {
-            "action": "set_teacher_tag",
+            "action": "save_user",
             "user_id": user.pk,
             "tag": tag,
         }, follow=True)
@@ -1891,7 +1972,7 @@ class TeacherTagAssignTests(BaseTestCase):
     def test_teacher_gets_and_loses_tag(self):
         response = self.post_tag(self.teacher_user, self.tag.pk)
 
-        self.assertContains(response, "тег Отделение: Высшая")
+        self.assertContains(response, "тег Высшая.")
         self.teacher.refresh_from_db()
         self.assertEqual(self.teacher.teacher_tag_id, self.tag.pk)
 
@@ -1914,11 +1995,16 @@ class TeacherTagAssignTests(BaseTestCase):
     def test_tag_select_is_shown_for_teachers_only(self):
         page = self.client.get(reverse("users"))
 
-        self.assertContains(page, 'value="set_teacher_tag"')
+        html = page.content.decode()
+
+        # Выбор тега только у строки преподавателя; ещё один select
+        # с таким именем — в фильтрах над списком.
         self.assertEqual(
-            page.content.decode().count('value="set_teacher_tag"'), 1
+            len(re.findall(r'<select name="tag"\s+aria-label', html)), 1
         )
-        self.assertContains(page, "Отделение: Высшая")
+        self.assertEqual(html.count('<select name="tag">'), 1)
+        self.assertContains(page, "Высшая")
+        self.assertNotContains(page, "Отделение: Высшая")
 
     def test_non_staff_cannot_set_tag(self):
         self.client.force_login(self.user)
@@ -1926,6 +2012,1911 @@ class TeacherTagAssignTests(BaseTestCase):
         response = self.post_tag(self.teacher_user, self.tag.pk)
 
         self.assertEqual(response.status_code, 403)
+
+
+class UserRowSaveTests(BaseTestCase):
+    """Одна кнопка «Сохранить» в строке пользователя (action=save_user)."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        self.tag = TeacherTag.objects.create(tag_name="Высшая")
+        self.teacher_user = get_user_model().objects.get(
+            username="teacherivanov@gmail.com"
+        )
+
+    def save(self, user, **fields):
+        return self.client.post(reverse("users"), {
+            "action": "save_user", "user_id": user.pk, **fields,
+        }, follow=True)
+
+    def fresh(self, user):
+        return get_user_model().objects.get(pk=user.pk)
+
+    def test_each_row_has_one_form_and_one_save_button(self):
+        html = self.client.get(reverse("users")).content.decode()
+        rows = get_user_model().objects.count()
+
+        self.assertEqual(html.count('value="save_user"'), rows)
+        self.assertNotIn('value="set_role"', html)
+        self.assertNotIn('value="set_group"', html)
+        self.assertNotIn('value="set_teacher_tag"', html)
+        self.assertEqual(html.count(">Сохранить</button>"), rows)
+
+    def test_old_teacher_select_is_gone(self):
+        Teacher.objects.create(teacher_name="Старый С. С.")
+
+        page = self.client.get(reverse("users"))
+
+        self.assertNotContains(page, 'name="teacher"')
+        self.assertNotContains(page, "Старый С. С.")
+        self.assertNotContains(page, "по ФИО пользователя")
+
+    def test_student_row_has_role_and_group_selects(self):
+        html = self.client.get(reverse("users")).content.decode()
+        row = html[html.index("student</td>"):]
+        row = row[:row.index("</tr>")]
+
+        self.assertIn('name="role"', row)
+        self.assertIn('name="group"', row)
+        self.assertNotIn('name="tag"', row)
+
+    def test_group_is_saved_with_unchanged_role(self):
+        response = self.save(self.user, role="student", group=self.group.pk)
+
+        self.assertContains(response, "группа А-01")
+        self.assertEqual(own_group_id(self.fresh(self.user)), self.group.pk)
+
+    def test_tag_is_saved_with_unchanged_role(self):
+        response = self.save(
+            self.teacher_user, role=ROLE_TEACHER, tag=self.tag.pk
+        )
+
+        self.assertContains(response, "тег Высшая.")
+        self.teacher.refresh_from_db()
+        self.assertEqual(self.teacher.teacher_tag_id, self.tag.pk)
+
+    def test_role_change_ignores_group_in_same_request(self):
+        set_group(self.user, self.group)
+
+        self.save(self.user, role=ROLE_TEACHER, group=self.group.pk)
+
+        user = self.fresh(self.user)
+        self.assertEqual(user_role(user), ROLE_TEACHER)
+        self.assertIsNone(user.profile.group_id)
+
+    def test_invalid_role_is_rejected(self):
+        response = self.save(self.user, role="boss")
+
+        self.assertContains(response, "Выберите роль из списка.")
+        self.assertEqual(user_role(self.fresh(self.user)), "student")
+
+    def test_unknown_user(self):
+        response = self.client.post(reverse("users"), {
+            "action": "save_user", "user_id": 99999, "role": "student",
+        }, follow=True)
+
+        self.assertContains(response, "Пользователь не найден.")
+
+    def test_nothing_to_change(self):
+        response = self.save(self.user, role="student")
+
+        self.assertContains(response, "изменений нет")
+
+    def test_own_role_is_locked(self):
+        response = self.save(self.admin, role="student")
+
+        self.assertContains(response, "Свою роль изменить нельзя.")
+        self.assertTrue(self.fresh(self.admin).is_staff)
+
+    def test_own_row_has_no_role_select(self):
+        html = self.client.get(reverse("users")).content.decode()
+        row = html[html.index("admin2</td>"):]
+        row = row[:row.index("</tr>")]
+
+        self.assertNotIn('name="role"', row)
+        self.assertIn("это вы", row)
+
+    def test_unknown_action_is_rejected(self):
+        response = self.client.post(reverse("users"), {
+            "action": "set_role", "user_id": self.user.pk, "role": "admin",
+        }, follow=True)
+
+        self.assertContains(response, "Неизвестное действие.")
+        self.assertFalse(self.fresh(self.user).is_staff)
+
+    def test_demoted_teacher_keeps_teacher_record(self):
+        teacher_id = own_teacher_id(self.teacher_user)
+
+        self.save(self.teacher_user, role="student")
+        demoted = self.fresh(self.teacher_user)
+
+        self.assertEqual(user_role(demoted), "student")
+        self.assertEqual(demoted.profile.teacher_id, teacher_id)
+        self.assertNotIn(self.teacher, real_teachers())
+
+        self.save(self.teacher_user, role=ROLE_TEACHER)
+        again = self.fresh(self.teacher_user)
+
+        self.assertEqual(own_teacher_id(again), teacher_id)
+        self.assertEqual(
+            Teacher.objects.filter(teacher_name="Иванов И. И.").count(), 1
+        )
+        self.assertIn(self.teacher, real_teachers())
+        self.assertTrue(Pair.objects.filter(teacher_id=teacher_id).exists())
+
+    def test_student_name_links_to_card(self):
+        page = self.client.get(reverse("users"))
+
+        self.assertContains(
+            page, reverse("student_card", args=[self.user.pk])
+        )
+        self.assertNotContains(
+            page, reverse("student_card", args=[self.teacher_user.pk])
+        )
+
+
+class StudentCardTests(BaseTestCase):
+    """Профиль студента: /students/<id>/profile/."""
+
+    def setUp(self):
+        set_group(self.user, self.group)
+        self.group.group_curator = self.teacher
+        self.group.save()
+        self.teacher_user = get_user_model().objects.get(
+            username="teacherivanov@gmail.com"
+        )
+        self.url = reverse("student_card", args=[self.user.pk])
+
+    def open(self, who):
+        self.client.force_login(who)
+
+        return self.client.get(self.url)
+
+    def test_anonymous_is_redirected_to_login(self):
+        response = self.client.get(self.url)
+
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_admin_sees_card(self):
+        response = self.open(self.admin)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "student_card.html")
+        self.assertContains(response, "Профиль студента")
+        self.assertContains(response, "А-01")
+        self.assertContains(response, "Иванов И. И.")
+        self.assertNotContains(response, "К пользователям")
+
+    def test_student_sees_own_card(self):
+        response = self.open(self.fresh_user())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "К пользователям")
+
+    def test_curator_sees_card_of_own_group(self):
+        self.assertEqual(self.open(self.teacher_user).status_code, 200)
+
+    def test_other_teacher_gets_403(self):
+        other = make_teacher("Петров П. П.", "petrov@gmail.com")
+        other_user = get_user_model().objects.get(username="petrov@gmail.com")
+
+        self.assertEqual(self.open(other_user).status_code, 403)
+
+    def test_curator_of_another_group_gets_403(self):
+        self.group.group_curator = None
+        self.group.save()
+
+        self.assertEqual(self.open(self.teacher_user).status_code, 403)
+
+    def test_other_student_gets_403(self):
+        stranger = get_user_model().objects.create_user(
+            "stranger", password=PASSWORD
+        )
+
+        self.assertEqual(self.open(stranger).status_code, 403)
+
+    def test_card_of_non_student_is_404(self):
+        self.client.force_login(self.admin)
+
+        for target in (self.admin, self.teacher_user):
+            url = reverse("student_card", args=[target.pk])
+            self.assertEqual(self.client.get(url).status_code, 404)
+
+        missing = reverse("student_card", args=[99999])
+        self.assertEqual(self.client.get(missing).status_code, 404)
+
+    def test_student_without_group(self):
+        set_group(self.user, None)
+
+        response = self.open(self.admin)
+
+        self.assertContains(response, "не назначена")
+
+    def test_menu_link_is_only_for_students(self):
+        page = self.open(self.fresh_user())
+        self.assertContains(page, "Мой профиль")
+        self.assertContains(page, self.url)
+
+        for who in (self.admin, self.teacher_user):
+            self.client.force_login(who)
+            self.assertNotContains(self.client.get(reverse("groups")),
+                                   "Мой профиль")
+
+    def fresh_user(self):
+        return get_user_model().objects.get(pk=self.user.pk)
+
+
+class TeacherCardTests(BaseTestCase):
+    """Профиль преподавателя: /teachers/<id>/profile/."""
+
+    def setUp(self):
+        self.group.group_curator = self.teacher
+        self.group.save()
+        self.teacher_user = get_user_model().objects.get(
+            username="teacherivanov@gmail.com"
+        )
+        self.url = reverse("teacher_card", args=[self.teacher.pk])
+
+    def open(self, who, url=None):
+        self.client.force_login(who)
+
+        return self.client.get(url or self.url)
+
+    def test_anonymous_is_redirected_to_login(self):
+        response = self.client.get(self.url)
+
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_card_shows_groups_pairs_and_tag(self):
+        tag = TeacherTag.objects.create(tag_name="Высшая")
+        self.teacher.teacher_tag = tag
+        self.teacher.save()
+
+        response = self.open(self.user)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "teacher_card.html")
+        self.assertContains(response, "Иванов И. И.")
+        self.assertContains(response, "Высшая")
+        self.assertContains(response, "Математика")
+        self.assertContains(
+            response, reverse("group_card", args=[self.group.pk])
+        )
+        self.assertContains(
+            response, f"{reverse('teachers')}?teacher={self.teacher.pk}"
+        )
+        self.assertNotContains(response, "К пользователям")
+
+    def test_login_is_visible_to_admin_and_to_the_teacher_only(self):
+        login = "teacherivanov@gmail.com"
+
+        self.assertContains(self.open(self.admin), login)
+        self.assertContains(self.open(self.teacher_user), login)
+        self.assertNotContains(self.open(self.user), login)
+        self.assertContains(self.open(self.user), "есть")
+
+    def test_profile_head_has_no_back_to_users_button(self):
+        self.assertNotContains(self.open(self.admin), "К пользователям")
+
+    def test_old_teacher_without_account_opens(self):
+        legacy = Teacher.objects.create(teacher_name="Старый С. С.")
+
+        response = self.open(
+            self.admin, reverse("teacher_card", args=[legacy.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Старый С. С.")
+        self.assertContains(response, "осталась от прежних версий")
+        self.assertContains(response, "Пар нет.")
+
+    def test_demoted_teacher_has_no_account_in_card(self):
+        set_role(self.teacher_user, "student")
+
+        response = self.open(self.admin)
+
+        self.assertContains(response, "осталась от прежних версий")
+        self.assertNotContains(response, "teacherivanov@gmail.com</dd>")
+
+    def test_missing_teacher_is_404(self):
+        response = self.open(
+            self.admin, reverse("teacher_card", args=[99999])
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_entry_points(self):
+        self.client.force_login(self.user)
+
+        page = self.client.get(
+            reverse("teachers"), {"teacher": self.teacher.pk}
+        )
+        self.assertContains(page, self.url)
+
+        with fake_today(MONDAY):
+            page = self.client.get(reverse("groups"))
+        self.assertContains(page, self.url)
+
+        self.client.force_login(self.admin)
+        page = self.client.get(reverse("users"))
+        self.assertContains(page, self.url)
+
+
+class GroupCardTests(BaseTestCase):
+    """Профиль группы: /groups/<id>/profile/."""
+
+    def setUp(self):
+        self.group.group_curator = self.teacher
+        self.group.save()
+        self.teacher_user = get_user_model().objects.get(
+            username="teacherivanov@gmail.com"
+        )
+        User = get_user_model()
+        self.zed = User.objects.create_user(
+            "zed", password=PASSWORD, last_name="Яковлев", first_name="Яков"
+        )
+        self.abe = User.objects.create_user(
+            "abe", password=PASSWORD, last_name="Абрамов", first_name="Аркадий"
+        )
+        set_group(self.zed, self.group)
+        set_group(self.abe, self.group)
+        set_group(self.user, self.group)
+        self.url = reverse("group_card", args=[self.group.pk])
+
+    def open(self, who, url=None):
+        self.client.force_login(who)
+
+        return self.client.get(url or self.url)
+
+    def test_anonymous_is_redirected_to_login(self):
+        response = self.client.get(self.url)
+
+        self.assertRedirects(response, f"{reverse('login')}?next={self.url}")
+
+    def test_card_shows_curator_pairs_and_teachers(self):
+        response = self.open(self.admin)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "group_card.html")
+        self.assertContains(response, "А-01")
+        self.assertContains(response, "Математика")
+        self.assertContains(
+            response, reverse("teacher_card", args=[self.teacher.pk]), count=2
+        )
+        self.assertContains(
+            response, reverse("group_schedule", args=[self.group.pk])
+        )
+
+    def test_group_without_curator(self):
+        self.group.group_curator = None
+        self.group.save()
+
+        self.assertContains(self.open(self.admin), "не назначен")
+
+    def test_admin_sees_students_sorted_by_name(self):
+        html = self.open(self.admin).content.decode()
+
+        self.assertIn(reverse("student_card", args=[self.zed.pk]), html)
+        self.assertLess(html.index("Абрамов"), html.index("Яковлев"))
+        self.assertContains(self.open(self.admin), "Студенты")
+
+    def test_curator_sees_students(self):
+        response = self.open(self.teacher_user)
+
+        self.assertContains(response, "Абрамов Аркадий")
+        self.assertContains(response, "Яковлев Яков")
+
+    def test_other_users_see_only_the_number_of_students(self):
+        stranger = get_user_model().objects.create_user(
+            "stranger", password=PASSWORD
+        )
+
+        for who in (self.user, stranger):
+            response = self.open(who)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, "Абрамов")
+            self.assertNotContains(response, "Яковлев")
+            self.assertEqual(response.context["student_count"], 3)
+            self.assertContains(response, "Список студентов видят")
+
+    def test_other_teacher_does_not_see_students(self):
+        make_teacher("Петров П. П.", "petrov@gmail.com")
+        other = get_user_model().objects.get(username="petrov@gmail.com")
+
+        response = self.open(other)
+
+        self.assertNotContains(response, "Абрамов")
+
+    def test_empty_group(self):
+        empty = Group.objects.create(
+            group_name="Пустая", group_course=self.course, shift=self.shift
+        )
+
+        response = self.open(
+            self.admin, reverse("group_card", args=[empty.pk])
+        )
+
+        self.assertContains(response, "В группе пока нет студентов.")
+        self.assertContains(response, "Пар нет.")
+
+    def test_missing_group_is_404(self):
+        response = self.open(
+            self.admin, reverse("group_card", args=[99999])
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_students_do_not_add_queries(self):
+        self.client.force_login(self.admin)
+
+        def count_queries():
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(self.url)
+            return len(ctx)
+
+        few = count_queries()
+
+        for number in range(5):
+            user = get_user_model().objects.create_user(
+                f"extra{number}", password=PASSWORD
+            )
+            set_group(user, self.group)
+
+        self.assertEqual(count_queries(), few)
+
+    def test_entry_points(self):
+        self.client.force_login(self.user)
+
+        with fake_today(MONDAY):
+            page = self.client.get(reverse("groups"))
+        self.assertContains(page, self.url)
+
+        page = self.client.get(
+            reverse("group_schedule", args=[self.group.pk])
+        )
+        self.assertContains(page, self.url)
+
+
+class GroupSearchTests(BaseTestCase):
+    """Поиск групп на странице «Группы»: ?q= (на сервере)."""
+
+    def setUp(self):
+        self.client.force_login(self.user)
+        self.group.group_curator = self.teacher
+        self.group.save()
+
+        for number in range(2, 10):
+            Group.objects.create(
+                group_name=f"Б-{number:02d}",
+                group_course=self.course,
+                shift=self.shift,
+            )
+
+    def search(self, query, **params):
+        with fake_today(MONDAY):
+            return self.client.get(reverse("groups"), {"q": query, **params})
+
+    def names(self, response):
+        return [
+            item["group"].group_name
+            for item in response.context["schedule_groups"]
+        ]
+
+    def test_without_query_all_groups_are_listed(self):
+        for query in ("", "   "):
+            response = self.search(query)
+
+            self.assertEqual(response.context["found_count"], 9)
+            self.assertNotContains(response, "group-search-info")
+
+    def test_search_by_name_is_case_insensitive(self):
+        response = self.search("а-01")
+
+        self.assertEqual(self.names(response), ["А-01"])
+        self.assertContains(response, "найдено групп: 1")
+
+    def test_search_by_curator(self):
+        response = self.search("иванов")
+
+        self.assertEqual(self.names(response), ["А-01"])
+
+    def test_search_works_across_pages(self):
+        first = self.search("Б-0")
+        second = self.search("Б-0", page=2)
+
+        self.assertEqual(first.context["found_count"], 8)
+        self.assertEqual(len(self.names(first)), 6)
+        self.assertEqual(len(self.names(second)), 2)
+
+    def test_nothing_found(self):
+        response = self.search("Яблоко")
+
+        self.assertEqual(self.names(response), [])
+        self.assertContains(response, "групп не найдено")
+
+    def test_percent_and_underscore_are_plain_characters(self):
+        self.assertEqual(self.names(self.search("%")), [])
+        self.assertEqual(self.names(self.search("_")), [])
+
+    def test_very_long_query_is_cut_not_failed(self):
+        response = self.search("я" * 500)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(response.context["q"]), 100)
+
+    def test_links_keep_the_query(self):
+        response = self.search("Б-0", date="2026-10-20")
+        encoded = quote("Б-0")
+
+        self.assertContains(response, f"date=2026-10-19&amp;q={encoded}")
+        self.assertContains(response, f"page=2&amp;q={encoded}")
+        self.assertContains(response, f"?q={encoded}\">Сегодня")
+
+    def test_form_keeps_value_and_date(self):
+        response = self.search("Б-0", date="2026-10-20")
+
+        self.assertContains(response, 'name="q" value="Б-0"')
+        self.assertContains(response, 'name="date" value="2026-10-20"')
+        self.assertContains(response, "Сбросить")
+
+    def test_search_on_day_off_does_not_fail(self):
+        with fake_today(SUNDAY):
+            response = self.client.get(reverse("groups"), {"q": "Б"})
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_html_in_query_is_escaped(self):
+        response = self.search("<b>x</b>")
+
+        self.assertNotContains(response, "<b>x</b>")
+
+
+class SeparateTagTests(BaseTestCase):
+    """Теги групп и теги преподавателей — две отдельные таблицы и карточки."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def add(self, kind, name, **fields):
+        return self.client.post(reverse("workshop"), {
+            "action": f"add_{kind}_tag", f"{kind}_tag-tag_name": name,
+            **fields,
+        }, follow=True)
+
+    def edit(self, kind, tag, **fields):
+        return self.client.post(reverse("workshop"), {
+            "action": "update_item", "edit": f"{kind}_tag", "item": tag.pk,
+            **fields,
+        }, follow=True)
+
+    def test_two_tag_cards_and_no_type_field(self):
+        page = self.client.get(reverse("workshop"))
+
+        self.assertContains(page, "Теги групп")
+        self.assertContains(page, "Теги преподавателей")
+        self.assertContains(page, 'name="group_tag-tag_name"')
+        self.assertContains(page, 'name="teacher_tag-tag_name"')
+        self.assertNotContains(page, "tag_type")
+        self.assertNotContains(page, 'value="add_tag"')
+
+    def test_each_card_adds_to_its_own_table(self):
+        self.assertContains(self.add("group", "Очное"), "Запись добавлена.")
+        self.add("teacher", "Высшая")
+
+        self.assertEqual(
+            list(GroupTag.objects.values_list("tag_name", flat=True)), ["Очное"]
+        )
+        self.assertEqual(
+            list(TeacherTag.objects.values_list("tag_name", flat=True)),
+            ["Высшая"],
+        )
+
+    def test_same_name_is_allowed_in_both_tables(self):
+        self.add("group", "Очное")
+        response = self.add("teacher", "Очное")
+
+        self.assertContains(response, "Запись добавлена.")
+        self.assertEqual(GroupTag.objects.count(), 1)
+        self.assertEqual(TeacherTag.objects.count(), 1)
+
+    def test_name_is_unique_ignoring_case_and_spaces_within_a_table(self):
+        self.add("group", "Очное")
+
+        response = self.add("group", "  очное ")
+
+        self.assertContains(response, "Проверьте заполненные поля.")
+        self.assertContains(response, "уже есть")
+        self.assertEqual(GroupTag.objects.count(), 1)
+
+    def test_name_is_normalised(self):
+        self.add("teacher", "  Высшая   категория ")
+
+        self.assertTrue(
+            TeacherTag.objects.filter(tag_name="Высшая категория").exists()
+        )
+
+    def test_empty_name_is_rejected(self):
+        response = self.add("group", "   ")
+
+        self.assertContains(response, "Заполните форму перед добавлением.")
+        self.assertFalse(GroupTag.objects.exists())
+
+    def test_editing_changes_name_and_color(self):
+        tag = GroupTag.objects.create(tag_name="Очное")
+
+        response = self.edit(
+            "group", tag,
+            **{"group_tag-tag_name": "Дневное", "group_tag-tag_color": "#112233"},
+        )
+
+        self.assertContains(response, "Изменения сохранены")
+        tag.refresh_from_db()
+        self.assertEqual(tag.tag_name, "Дневное")
+        self.assertEqual(tag.tag_color, "#112233")
+
+    def test_renaming_to_an_existing_name_is_rejected(self):
+        GroupTag.objects.create(tag_name="Очное")
+        other = GroupTag.objects.create(tag_name="Заочное")
+
+        response = self.edit("group", other, **{"group_tag-tag_name": "очное"})
+
+        self.assertContains(response, "Проверьте заполненные поля.")
+        other.refresh_from_db()
+        self.assertEqual(other.tag_name, "Заочное")
+
+    def test_group_form_offers_only_group_tags(self):
+        GroupTag.objects.create(tag_name="Очное")
+        TeacherTag.objects.create(tag_name="Высшая")
+
+        form = self.client.get(reverse("workshop")).context["cards"]["group"]["form"]
+
+        names = [str(tag) for tag in form.fields["group_tag"].queryset]
+        self.assertEqual(names, ["Очное"])
+
+    def test_tag_lists_are_sorted_by_name(self):
+        GroupTag.objects.create(tag_name="Я-тег")
+        GroupTag.objects.create(tag_name="Б-тег")
+        TeacherTag.objects.create(tag_name="Д-тег")
+
+        html = self.client.get(reverse("users")).content.decode()
+
+        self.assertLess(html.index("Б-тег"), html.index("Я-тег"))
+
+    def test_users_page_offers_both_kinds_of_tags(self):
+        group_tag = GroupTag.objects.create(tag_name="Очное")
+        teacher_tag = TeacherTag.objects.create(tag_name="Высшая")
+
+        html = self.client.get(reverse("users")).content.decode()
+
+        self.assertIn(f'value="g{group_tag.pk}"', html)
+        self.assertIn(f'value="t{teacher_tag.pk}"', html)
+        self.assertIn('label="Теги групп"', html)
+        self.assertIn('label="Теги преподавателей"', html)
+
+
+class YearCalendarTests(BaseTestCase):
+    """Годовой календарь: 12 маленьких месяцев, /calendar/year/."""
+
+    def setUp(self):
+        self.client.force_login(self.user)
+        self.url = reverse("calendar_year")
+
+    def get(self, **params):
+        with fake_today(MONDAY):
+            return self.client.get(self.url, params)
+
+    def test_anonymous_is_redirected_to_login(self):
+        self.client.logout()
+
+        self.assertRedirects(
+            self.client.get(self.url), f"{reverse('login')}?next={self.url}"
+        )
+
+    def test_twelve_months_of_the_requested_year(self):
+        response = self.get(year=2026)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "calendar_year.html")
+        self.assertEqual(response.context["year"], 2026)
+        self.assertEqual(len(response.context["months"]), 12)
+        self.assertEqual(
+            [month["number"] for month in response.context["months"]],
+            list(range(1, 13)),
+        )
+        self.assertContains(response, 'class="mini-month', count=12)
+        self.assertContains(response, "2026 год")
+
+    def test_every_day_of_the_year_is_present_once(self):
+        for year, days in ((2026, 365), (2028, 366)):
+            with self.subTest(year=year):
+                months = self.get(year=year).context["months"]
+                cells = [
+                    cell
+                    for month in months
+                    for week in month["weeks"]
+                    for cell in week
+                    if cell
+                ]
+
+                self.assertEqual(len(cells), days)
+
+    def test_october_2026_starts_on_thursday(self):
+        october = self.get(year=2026).context["months"][9]
+
+        self.assertEqual(october["name"], "Октябрь")
+        self.assertEqual(len(october["weeks"]), 5)
+        self.assertEqual(
+            [bool(cell) for cell in october["weeks"][0]],
+            [False, False, False, True, True, True, True],
+        )
+        self.assertEqual(october["weeks"][0][3]["number"], 1)
+
+    def test_today_and_current_month_are_marked(self):
+        months = self.get(year=2026).context["months"]
+
+        self.assertTrue(months[9]["is_current"])
+        self.assertEqual(sum(month["is_current"] for month in months), 1)
+
+        today = [
+            cell for week in months[9]["weeks"] for cell in week
+            if cell and cell["is_today"]
+        ]
+        self.assertEqual([cell["number"] for cell in today], [19])
+
+        other = self.get(year=2025).context["months"]
+        self.assertFalse(any(month["is_current"] for month in other))
+
+    def test_sundays_are_marked(self):
+        october = self.get(year=2026).context["months"][9]
+        sundays = [
+            cell["number"] for week in october["weeks"] for cell in week
+            if cell and cell["is_sunday"]
+        ]
+
+        self.assertEqual(sundays, [4, 11, 18, 25])
+
+    def test_holidays_come_from_the_calendar_table(self):
+        Calendar.objects.create(
+            date=date(2026, 1, 1), weekday=4,
+            is_holiday=True, holiday_name="Новый год",
+        )
+
+        response = self.get(year=2026)
+        january = response.context["months"][0]
+        first = january["weeks"][0][3]
+
+        self.assertTrue(first["is_holiday"])
+        self.assertEqual(first["holiday_name"], "Новый год")
+        self.assertContains(response, 'title="Новый год"')
+
+    def test_page_only_reads_the_calendar_table(self):
+        self.get(year=2026)
+
+        self.assertFalse(Calendar.objects.exists())
+
+    def test_day_links_follow_the_role(self):
+        group = self.group
+        self.client.force_login(self.user)
+        set_group(self.user, group)
+
+        with fake_today(MONDAY):
+            student = self.client.get(self.url, {"year": 2026})
+
+        self.assertContains(
+            student,
+            reverse("group_schedule", args=[group.pk]) + "?date=2026-10-20",
+        )
+
+        with fake_today(MONDAY):
+            self.client.force_login(self.admin)
+            admin = self.client.get(self.url, {"year": 2026})
+
+        self.assertContains(admin, reverse("groups") + "?date=2026-10-20")
+
+    def test_month_names_link_to_month_view(self):
+        response = self.get(year=2026)
+
+        self.assertContains(
+            response, f"{reverse('calendar')}?year=2026&amp;month=10"
+        )
+
+    def test_bad_year_falls_back_to_current(self):
+        for value in ("abc", "1999", "2101", ""):
+            with self.subTest(year=value):
+                response = self.get(year=value)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["year"], 2026)
+
+    def test_year_navigation_and_limits(self):
+        middle = self.get(year=2030).context
+
+        self.assertEqual(middle["prev_year"], 2029)
+        self.assertEqual(middle["next_year"], 2031)
+        self.assertFalse(middle["is_current_year"])
+        self.assertEqual(self.get(year=2000).context["prev_year"], None)
+        self.assertEqual(self.get(year=2100).context["next_year"], None)
+        today_link = rf'href="{reverse("calendar_year")}">\s*Сегодня'
+
+        self.assertNotRegex(self.get(year=2026).content.decode(), today_link)
+        self.assertRegex(self.get(year=2030).content.decode(), today_link)
+
+    def test_month_button_returns_to_a_sensible_month(self):
+        current = self.get(year=2026)
+        other = self.get(year=2030)
+
+        button = (
+            rf'href="{reverse("calendar")}\?year={{year}}&amp;month={{month}}">'
+            r"\s*Месячный"
+        )
+
+        self.assertRegex(
+            current.content.decode(), button.format(year=2026, month=10)
+        )
+        self.assertRegex(
+            other.content.decode(), button.format(year=2030, month=1)
+        )
+
+    def test_query_count_is_constant(self):
+        with CaptureQueriesContext(connection) as ctx:
+            self.get(year=2026)
+
+        self.assertLess(len(ctx), 12)
+
+    def test_month_page_has_the_year_button(self):
+        with fake_today(MONDAY):
+            page = self.client.get(
+                reverse("calendar"), {"year": 2027, "month": 3}
+            )
+
+        self.assertContains(page, f"{reverse('calendar_year')}?year=2027")
+        self.assertContains(page, "Годовой")
+
+
+class UsersFilterTests(BaseTestCase):
+    """Страница «Пользователи»: поиск, фильтры, порядок, подсветка нового."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        User = get_user_model()
+
+        self.group_b = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        self.group.group_curator = self.teacher
+        self.group.save()
+
+        self.teacher_tag = TeacherTag.objects.create(tag_name="Высшая")
+        self.group_tag = GroupTag.objects.create(tag_name="Очное")
+        self.teacher.teacher_tag = self.teacher_tag
+        self.teacher.save()
+        self.group_b.group_tag = self.group_tag
+        self.group_b.save()
+
+        self.abe = User.objects.create_user(
+            "abe", password=PASSWORD, last_name="Абрамов",
+            first_name="Аркадий", email="abe@gmail.com",
+        )
+        self.yak = User.objects.create_user(
+            "yak", password=PASSWORD, last_name="Яковлев", first_name="Яков",
+        )
+        self.bor = User.objects.create_user(
+            "bor", password=PASSWORD, last_name="Борисов", first_name="Борис",
+        )
+        set_group(self.abe, self.group)
+        set_group(self.yak, self.group_b)
+        Profile.objects.create(user=self.bor, role="student", patronymic="Петрович")
+
+        make_teacher("Петров П. П.", "petrov@gmail.com")
+        self.teacher_user = User.objects.get(username="teacherivanov@gmail.com")
+        self.petrov = User.objects.get(username="petrov@gmail.com")
+
+    def names(self, response):
+        return [row["user"].username for row in response.context["rows"]]
+
+    def get(self, **params):
+        return self.client.get(reverse("users"), params)
+
+    # --- порядок -----------------------------------------------------------
+
+    def test_newest_first_by_default(self):
+        names = self.names(self.get())
+
+        self.assertEqual(names[:3], ["petrov@gmail.com", "bor", "yak"])
+
+    def test_sort_by_name(self):
+        names = self.names(self.get(sort="name", q="ов"))
+
+        self.assertEqual(names, ["abe", "bor", "yak"])
+
+    # --- поиск -------------------------------------------------------------
+
+    def test_search_by_surname_email_patronymic_and_login(self):
+        self.assertEqual(self.names(self.get(q="абрамов")), ["abe"])
+        self.assertEqual(self.names(self.get(q="ABE@gmail")), ["abe"])
+        self.assertEqual(self.names(self.get(q="петрович")), ["bor"])
+        self.assertEqual(self.names(self.get(q="yak")), ["yak"])
+
+    def test_search_words_must_all_match(self):
+        self.assertEqual(self.names(self.get(q="абрамов аркадий")), ["abe"])
+        self.assertEqual(self.names(self.get(q="абрамов яков")), [])
+
+    def test_percent_is_a_plain_character(self):
+        self.assertEqual(self.names(self.get(q="%")), [])
+
+    # --- роль, группа, теги, кураторы -------------------------------------
+
+    def test_role_filters(self):
+        admins = self.names(self.get(role="admin"))
+        teachers = self.names(self.get(role="teacher"))
+        students = self.names(self.get(role="student"))
+
+        self.assertEqual(admins, ["admin2"])
+        self.assertCountEqual(
+            teachers, ["teacherivanov@gmail.com", "petrov@gmail.com"]
+        )
+        self.assertCountEqual(
+            students, ["student", "abe", "yak", "bor"]
+        )
+
+    def test_group_filter(self):
+        self.assertEqual(self.names(self.get(group=self.group.pk)), ["abe"])
+        self.assertEqual(self.names(self.get(group=self.group_b.pk)), ["yak"])
+
+    def test_students_without_group(self):
+        names = self.names(self.get(nogroup=1))
+
+        self.assertCountEqual(names, ["student", "bor"])
+
+    def test_curators(self):
+        self.assertEqual(
+            self.names(self.get(curators=1)), ["teacherivanov@gmail.com"]
+        )
+
+    def test_tag_of_teacher_and_tag_of_student_group(self):
+        self.assertEqual(
+            self.names(self.get(tag=f"t{self.teacher_tag.pk}")),
+            ["teacherivanov@gmail.com"],
+        )
+        self.assertEqual(
+            self.names(self.get(tag=f"g{self.group_tag.pk}")), ["yak"]
+        )
+
+    def test_tag_filter_needs_a_kind_letter(self):
+        # Номера в двух таблицах независимы: вид тега решает буква g / t
+        self.assertEqual(self.get(tag="x1").context["filters"]["tag"], "")
+        self.assertEqual(self.get(tag="1").context["filters"]["tag"], "")
+        self.assertEqual(
+            self.get(tag=f"g{self.group_tag.pk}").context["filters"]["tag"],
+            f"g{self.group_tag.pk}",
+        )
+
+    def test_filters_combine(self):
+        self.assertEqual(
+            self.names(self.get(role="student", q="я")), ["yak"]
+        )
+        self.assertEqual(
+            self.names(self.get(role="teacher", nogroup=1)), []
+        )
+
+    def test_unknown_values_are_ignored(self):
+        everyone = get_user_model().objects.count()
+
+        response = self.get(role="boss", group="abc", tag="g99999", sort="zzz")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["found_count"], everyone)
+        self.assertFalse(response.context["has_filters"])
+        self.assertEqual(response.context["filters"]["sort"], "new")
+
+    def test_nothing_found_message(self):
+        response = self.get(q="Яблоко")
+
+        self.assertContains(response, "Никого не найдено.")
+        self.assertContains(response, "Найдено: 0.")
+
+    def test_form_shows_filters_and_keeps_values(self):
+        response = self.get(q="аб", role="student", group=self.group.pk,
+                            nogroup=1, curators=1)
+
+        self.assertContains(response, 'name="q" value="аб"')
+        self.assertContains(response, "Все роли")
+        self.assertContains(response, "Все группы")
+        self.assertContains(response, "Все теги")
+        self.assertContains(response, "Студенты без группы")
+        self.assertContains(response, "Кураторы")
+        self.assertContains(response, "Сбросить")
+        self.assertContains(response, 'name="nogroup" value="1" checked')
+
+    # --- страницы ----------------------------------------------------------
+
+    def make_many(self, count=20, start=0):
+        for number in range(start, start + count):
+            get_user_model().objects.create_user(
+                f"extra{number:02d}", password=PASSWORD,
+                last_name=f"Лишний{number:02d}",
+            )
+
+    def test_pages_keep_filters(self):
+        self.make_many()
+
+        response = self.get(q="Лишний")
+        encoded = quote("Лишний")
+
+        self.assertEqual(response.context["found_count"], 20)
+        self.assertTrue(response.context["page_obj"].has_next())
+        self.assertContains(response, f"?q={encoded}&amp;page=2")
+
+        second = self.get(q="Лишний", page=2)
+
+        self.assertEqual(len(second.context["rows"]), 5)
+
+    # --- сохранение сохраняет фильтры ---------------------------------------
+
+    def test_saving_a_row_keeps_page_and_filters(self):
+        response = self.client.post(reverse("users"), {
+            "action": "save_user",
+            "user_id": self.yak.pk,
+            "role": "student",
+            "group": self.group.pk,
+            "page": "1",
+            "qs": "role=student&sort=name&junk=1",
+        })
+
+        self.assertRedirects(
+            response, reverse("users") + "?role=student&sort=name&page=1"
+        )
+        fresh = get_user_model().objects.get(pk=self.yak.pk)
+        self.assertEqual(own_group_id(fresh), self.group.pk)
+
+    def test_rows_carry_the_current_filters(self):
+        html = self.get(role="student", sort="name").content.decode()
+
+        self.assertIn('name="qs" value="role=student&amp;sort=name"', html)
+
+    # --- новый пользователь -------------------------------------------------
+
+    def create(self, username="newbie@gmail.com"):
+        return self.client.post(reverse("users"), {
+            "action": "create_user",
+            "new_user-role": "student",
+            "new_user-last_name": "Новиков",
+            "new_user-first_name": "Никита",
+            "new_user-patronymic": "",
+            "new_user-username": username,
+            "new_user-group": self.group.pk,
+            "new_user-password": STUDENT_PASSWORD,
+            "page": "2",
+        })
+
+    def test_new_user_is_first_and_highlighted(self):
+        response = self.create()
+        new = get_user_model().objects.get(username="newbie@gmail.com")
+
+        self.assertRedirects(response, reverse("users") + f"?new={new.pk}")
+
+        page = self.client.get(response["Location"])
+        rows = page.context["rows"]
+
+        self.assertEqual(rows[0]["user"].pk, new.pk)
+        self.assertTrue(rows[0]["is_new"])
+        self.assertFalse(any(row["is_new"] for row in rows[1:]))
+        self.assertContains(page, '<tr class="is-new">', count=1)
+
+    def test_highlight_needs_a_real_user_id(self):
+        page = self.get(new="abc")
+
+        self.assertNotContains(page, 'class="is-new"')
+
+    def test_new_user_is_visible_even_after_filters(self):
+        self.get(q="Яблоко")
+
+        response = self.create()
+        page = self.client.get(response["Location"])
+
+        self.assertIn(
+            "newbie@gmail.com", self.names(page)
+        )
+
+    # --- раунд 17: вид страницы ------------------------------------------------
+
+    def test_search_has_magnifier_button_and_no_text_button(self):
+        html = self.get().content.decode()
+
+        self.assertIn('class="search-go" type="submit"', html)
+        self.assertIn('aria-label="Найти"', html)
+        self.assertNotIn(">Показать<", html)
+        self.assertNotIn("user-filter-button", html)
+
+    def test_checkboxes_are_pills_in_the_common_filter_grid(self):
+        html = self.get().content.decode()
+        grid = html[html.index("user-filter-grid"):html.index("</form>")]
+
+        self.assertEqual(grid.count('class="user-filter-pill"'), 2)
+        self.assertIn('name="nogroup"', grid)
+        self.assertIn('name="curators"', grid)
+        self.assertEqual(grid.count("<select"), 4)
+
+    def test_student_row_shows_group_pills_and_curator(self):
+        response = self.get(q="abe")
+        html = response.content.decode()
+        row = html[html.index("<tr"):]
+
+        self.assertIn(reverse("group_card", args=[self.group.pk]), row)
+        self.assertIn('class="group-pills"', row)
+        self.assertIn("Куратор:", row)
+        self.assertIn(reverse("teacher_card", args=[self.teacher.pk]), row)
+
+    def test_student_without_group_and_group_without_curator(self):
+        self.assertContains(
+            self.get(q="bor"), '<span class="users-hint">без группы</span>'
+        )
+        self.assertContains(
+            self.get(q="yak"), '<span class="users-hint">не назначен</span>'
+        )
+
+    def test_teacher_row_lists_curated_groups(self):
+        self.group_b.group_curator = self.teacher
+        self.group_b.save()
+
+        response = self.get(q="teacherivanov")
+
+        self.assertContains(response, "Курирует:")
+        self.assertContains(
+            response, reverse("group_card", args=[self.group.pk])
+        )
+        self.assertContains(
+            response, reverse("group_card", args=[self.group_b.pk])
+        )
+        self.assertContains(self.get(q="petrov"), "никого не курирует")
+
+    def test_last_login_is_shown_or_never(self):
+        self.assertContains(self.get(q="abe"), "не входил")
+
+        self.abe.last_login = timezone.now()
+        self.abe.save()
+
+        response = self.get(q="abe")
+        expected = timezone.localtime(self.abe.last_login).strftime(
+            "%d.%m.%Y %H:%M"
+        )
+
+        self.assertContains(response, expected)
+        self.assertNotContains(response, "не входил")
+
+    def test_empty_result_spans_all_five_columns(self):
+        self.assertContains(self.get(q="нет-такого"), 'colspan="5"')
+
+    def test_css_has_equal_grid_and_search_button(self):
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+        block = css[css.index("Раунд 17"):]
+
+        self.assertRegex(block, r"\.user-filter-grid \{\s*display: grid;")
+        self.assertIn("repeat(auto-fill, minmax(170px, 1fr))", block)
+        self.assertRegex(block, r"\.search-go \{\s*position: absolute;")
+        self.assertIn(".user-filter-pill input:checked + span", block)
+        self.assertNotIn("user-filter-row", css)
+
+    # --- скорость ------------------------------------------------------------
+
+    def test_queries_do_not_grow_with_users_on_the_page(self):
+        def count_queries(**params):
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(reverse("users"), params)
+            return len(ctx)
+
+        self.make_many(3)
+        few = count_queries(q="Лишний")
+        self.make_many(11, start=3)
+
+        self.assertEqual(count_queries(q="Лишний"), few)
+
+
+class UsersIndexesTests(TestCase):
+    """Скрипт индексов согласован с моделями."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        path = Path(settings.BASE_DIR) / "database" / "add_users_indexes.py"
+        cls.script = path.read_text(encoding="utf-8")
+
+    def test_model_indexes_are_in_the_script(self):
+        names = [index.name for index in Profile._meta.indexes]
+        names += [index.name for index in Group._meta.indexes]
+
+        self.assertEqual(
+            sorted(names),
+            ["group_curator_idx", "profile_group_idx", "profile_role_idx",
+             "profile_teacher_idx"],
+        )
+
+        for name in names:
+            with self.subTest(index=name):
+                self.assertIn(name, self.script)
+
+    def test_script_covers_filters_and_name_order(self):
+        self.assertIn('"Profile" (role)', self.script)
+        self.assertIn('"Profile" ("group")', self.script)
+        self.assertIn("group_curator_id", self.script)
+        self.assertIn("(last_name, first_name, username)", self.script)
+
+    def test_script_is_safe_to_repeat(self):
+        self.assertEqual(self.script.count("CREATE INDEX IF NOT EXISTS"), 5)
+
+
+class SplitTagsScriptTests(TestCase):
+    """Скрипты базы согласованы с моделями GroupTag и TeacherTag."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        base = Path(settings.BASE_DIR) / "database"
+        cls.split = (base / "split_tags.py").read_text(encoding="utf-8")
+        cls.create = (base / "create_db.py").read_text(encoding="utf-8")
+
+    def test_tables_and_columns_match_models(self):
+        for model in (GroupTag, TeacherTag):
+            with self.subTest(model=model.__name__):
+                table = f'"{model._meta.db_table}"'
+
+                for script in (self.split, self.create):
+                    self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", script)
+
+                for field in model._meta.concrete_fields:
+                    self.assertIn(field.column, self.split)
+
+    def test_old_tables_are_gone_from_create_script(self):
+        self.assertNotIn('"TagType"', self.create)
+        self.assertNotIn('"Tag"', self.create)
+        self.assertIn('REFERENCES "GroupTag"(tag_id)', self.create)
+        self.assertIn('REFERENCES "TeacherTag"(tag_id)', self.create)
+
+    def test_split_script_moves_data_and_drops_old_tables(self):
+        self.assertIn('DROP TABLE "Tag"', self.split)
+        self.assertIn('DROP TABLE IF EXISTS "TagType"', self.split)
+        self.assertIn("to_regclass", self.split)
+        self.assertIn("ON CONFLICT (tag_name) DO NOTHING", self.split)
+
+    def test_models_point_to_new_tables(self):
+        self.assertIs(Group._meta.get_field("group_tag").related_model, GroupTag)
+        self.assertIs(
+            Teacher._meta.get_field("teacher_tag").related_model, TeacherTag
+        )
+
+
+class SharedPairTests(BaseTestCase):
+    """Пара — самостоятельный объект: одна пара у нескольких групп."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        self.other = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        PairGroup.objects.create(pair=self.pair, group=self.other)
+        Day.objects.create(
+            group=self.other, pair=self.pair, pair_number=1,
+            weekday=Weekday.objects.get(pk=1),
+        )
+
+    def add_pair(self, **fields):
+        data = {
+            "action": "add_pair",
+            "pair-pair_name": "Физика",
+            "pair-teacher": self.teacher.pk,
+            "pair-groups": [self.group.pk, self.other.pk],
+        }
+        data.update(fields)
+
+        return self.client.post(reverse("workshop"), data, follow=True)
+
+    # --- модель и форма -------------------------------------------------------
+
+    def test_pair_has_no_group_and_two_attachments(self):
+        self.assertFalse(hasattr(self.pair, "group"))
+        self.assertEqual(self.pair.groups.count(), 2)
+        self.assertEqual(self.group.pairs.get(), self.pair)
+
+    def test_attachment_is_unique(self):
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PairGroup.objects.create(pair=self.pair, group=self.group)
+
+    def test_form_creates_pair_with_several_groups(self):
+        response = self.add_pair()
+
+        self.assertContains(response, "Запись добавлена.")
+        pair = Pair.objects.get(pair_name="Физика")
+        self.assertEqual(
+            set(pair.groups.values_list("pk", flat=True)),
+            {self.group.pk, self.other.pk},
+        )
+
+    def test_pair_can_be_created_without_groups(self):
+        self.add_pair(**{"pair-groups": []})
+
+        self.assertEqual(Pair.objects.get(pair_name="Физика").groups.count(), 0)
+
+    def test_same_teacher_and_name_is_rejected(self):
+        response = self.add_pair(**{"pair-pair_name": " математика "})
+
+        self.assertContains(response, "уже есть пара с таким названием")
+        self.assertEqual(Pair.objects.count(), 1)
+
+    def test_other_teacher_may_have_pair_with_same_name(self):
+        petrov = make_teacher("Петров П. П.", "teacherpetrov@gmail.com")
+
+        response = self.add_pair(**{
+            "pair-pair_name": "Математика", "pair-teacher": petrov.pk,
+        })
+
+        self.assertContains(response, "Запись добавлена.")
+        self.assertEqual(Pair.objects.filter(pair_name="Математика").count(), 2)
+
+    def test_pair_form_shows_groups_as_checkboxes(self):
+        html = self.client.get(reverse("workshop")).content.decode()
+
+        self.assertIn('name="pair-groups"', html)
+        self.assertIn('type="checkbox"', html)
+        self.assertNotIn('name="pair-group"', html)
+
+    def test_edit_form_has_current_groups_checked(self):
+        response = self.client.get(
+            reverse("workshop"), {"edit": "pair", "item": self.pair.pk}
+        )
+        form = response.context["cards"]["pair"]["form"]
+
+        self.assertEqual(
+            set(form.initial["groups"]), {self.group.pk, self.other.pk}
+        )
+
+    def test_picker_label_has_name_and_teacher(self):
+        response = self.client.get(reverse("workshop"), {"edit": "pair"})
+        items = response.context["cards"]["pair"]["items"]
+
+        self.assertEqual(items[0]["label"], "Математика · Иванов И. И.")
+
+    def test_deleting_a_pair_asks_what_goes_with_it(self):
+        response = self.client.post(reverse("workshop"), {
+            "action": "delete_item", "edit": "pair", "item": self.pair.pk,
+        })
+        text = response.context["cards"]["pair"]["confirm_text"]
+
+        self.assertIn("занятия в расписании — 2", text)
+
+    # --- правки расписания по группам -----------------------------------------
+
+    def cancel(self, group):
+        return self.client.post(
+            reverse("group_change", args=[group.pk]),
+            {"kind": "cancel", "date": "2026-10-19", "number": 1},
+        )
+
+    def lesson(self, group):
+        with fake_today(MONDAY):
+            response = self.client.get(
+                reverse("group_schedule", args=[group.pk]),
+                {"date": "2026-10-19"},
+            )
+
+        return response.context["schedule_days"][0]["pairs"][0]["lesson"]
+
+    def test_change_remembers_its_group(self):
+        self.cancel(self.group)
+
+        self.assertEqual(ScheduleChange.objects.get().group_id, self.group.pk)
+
+    def test_cancel_in_one_group_does_not_touch_the_other(self):
+        self.cancel(self.group)
+
+        self.assertEqual(self.lesson(self.group)["status"], "cancel")
+        self.assertEqual(self.lesson(self.other)["status"], "")
+
+    def test_changes_of_two_groups_are_independent(self):
+        self.cancel(self.group)
+        self.cancel(self.other)
+
+        self.assertEqual(ScheduleChange.objects.count(), 2)
+
+        self.client.post(
+            reverse("group_change", args=[self.group.pk]),
+            {"kind": "restore", "date": "2026-10-19", "number": 1},
+        )
+
+        self.assertEqual(ScheduleChange.objects.get().group_id, self.other.pk)
+        self.assertEqual(self.lesson(self.group)["status"], "")
+        self.assertEqual(self.lesson(self.other)["status"], "cancel")
+
+    def test_teacher_sees_both_groups_in_the_same_slot(self):
+        with fake_today(MONDAY):
+            response = self.client.get(
+                reverse("teachers"),
+                {"teacher": self.teacher.pk, "date": "2026-10-19"},
+            )
+
+        lessons = response.context["schedule_days"][0]["pairs"][0]["lessons"]
+
+        self.assertEqual(
+            sorted(item["group"].group_name for item in lessons),
+            ["А-01", "Б-02"],
+        )
+
+    # --- страницы -------------------------------------------------------------
+
+    def test_group_card_lists_attached_pairs_with_count(self):
+        PairGroup.objects.filter(pair=self.pair, group=self.other).delete()
+        make_pair(self.group, self.teacher, "Физика")
+
+        response = self.client.get(reverse("group_card", args=[self.group.pk]))
+
+        self.assertContains(response, 'Пары <span class="profile-count">2</span>')
+
+    def test_teacher_card_shows_groups_of_each_pair(self):
+        response = self.client.get(reverse("teacher_card", args=[self.teacher.pk]))
+
+        self.assertContains(response, "Математика")
+        self.assertContains(response, reverse("group_card", args=[self.group.pk]))
+        self.assertContains(response, reverse("group_card", args=[self.other.pk]))
+
+    def test_admin_sees_group_stats_student_does_not(self):
+        with fake_today(MONDAY):
+            page = self.client.get(reverse("group_schedule", args=[self.group.pk]))
+
+        stats = page.context["group_stats"]
+        self.assertEqual(stats["attached"], 1)
+        self.assertEqual(stats["lessons"], 1)
+        self.assertEqual(stats["teachers"], 1)
+        self.assertEqual(stats["unused"], 0)
+        self.assertContains(page, "Сводка")
+
+        make_pair(self.group, self.teacher, "Лишняя")
+        with fake_today(MONDAY):
+            page = self.client.get(reverse("group_schedule", args=[self.group.pk]))
+        self.assertEqual(page.context["group_stats"]["unused"], 1)
+
+        self.client.force_login(self.user)
+        with fake_today(MONDAY):
+            page = self.client.get(reverse("group_schedule", args=[self.group.pk]))
+
+        self.assertIsNone(page.context["group_stats"])
+        self.assertNotContains(page, "Сводка")
+
+    def test_group_pages_do_not_query_per_pair(self):
+        def count():
+            with fake_today(MONDAY):
+                with CaptureQueriesContext(connection) as ctx:
+                    self.client.get(
+                        reverse("teacher_card", args=[self.teacher.pk])
+                    )
+            return len(ctx)
+
+        count()
+        few = count()
+
+        for index in range(5):
+            pair = make_pair(self.group, self.teacher, f"Предмет {index}")
+            PairGroup.objects.create(pair=pair, group=self.other)
+
+        self.assertEqual(count(), few)
+
+    def test_deleting_a_group_keeps_its_pairs(self):
+        self.other.delete()
+
+        self.assertTrue(Pair.objects.filter(pk=self.pair.pk).exists())
+        self.assertEqual(self.pair.groups.count(), 1)
+
+    def test_css_has_stats_and_warning_styles(self):
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+        block = css[css.index("Раунд 19"):]
+
+        self.assertIn(".group-stats", block)
+        self.assertIn("#id_pair-groups", block)
+        self.assertIn(".message.warning", css)
+
+
+class PairGroupsScriptTests(TestCase):
+    """Скрипт add_pair_groups.py согласован с моделями."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        base = Path(settings.BASE_DIR) / "database"
+        cls.script = (base / "add_pair_groups.py").read_text(encoding="utf-8")
+        cls.create = (base / "create_db.py").read_text(encoding="utf-8")
+
+    def test_table_and_columns_match_models(self):
+        self.assertEqual(PairGroup._meta.db_table, "PairGroup")
+
+        for script in (self.script, self.create):
+            self.assertIn('CREATE TABLE IF NOT EXISTS "PairGroup"', script)
+
+        for field in PairGroup._meta.concrete_fields:
+            self.assertIn(field.column, self.script)
+
+        self.assertIn("unique_pair_group", self.script)
+
+    def test_pairs_lose_group_column_and_changes_get_it(self):
+        self.assertNotIn("group", [f.name for f in Pair._meta.concrete_fields])
+        self.assertIn('DROP COLUMN "group"', self.script)
+        self.assertIn('"ScheduleChange"', self.script)
+        self.assertIn('ADD COLUMN IF NOT EXISTS "group"', self.script)
+        self.assertIn('"group" INT NOT NULL', self.create)
+
+    def test_script_asks_for_confirmation_and_wipes_old_data(self):
+        self.assertIn("pg_dump", self.script)
+        self.assertIn("input(", self.script)
+        self.assertIn("ДА", self.script)
+        self.assertIn('TRUNCATE TABLE "Day", "ScheduleChange", "Pairs"', self.script)
+        self.assertIn("DiaryMark", self.script)
+
+    def test_script_is_safe_to_repeat(self):
+        self.assertIn("has_old_structure", self.script)
+        self.assertIn("Структура уже новая", self.script)
+
+
+class ZipExportTests(BaseTestCase):
+    """«Скачать всё одним ZIP»: те же CSV, что и по одному."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def archive(self):
+        import io
+        import zipfile
+
+        response = self.client.get(reverse("workshop_export_all"))
+
+        return response, zipfile.ZipFile(io.BytesIO(response.content))
+
+    def test_zip_has_every_set_once(self):
+        response, archive = self.archive()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/zip")
+        self.assertRegex(
+            response["Content-Disposition"],
+            r'^attachment; filename="raspisite_\d{4}-\d{2}-\d{2}\.zip"$',
+        )
+        self.assertEqual(
+            archive.namelist(),
+            [f"raspisite_{kind}.csv" for kind in
+             ("bells", "teachers", "groups", "pairs", "schedule", "diary")],
+        )
+
+    def test_files_are_the_same_as_single_exports(self):
+        _, archive = self.archive()
+
+        for kind in ("teachers", "pairs", "schedule"):
+            single = self.client.get(
+                reverse("workshop_export"), {"kind": kind}
+            ).content
+
+            self.assertEqual(archive.read(f"raspisite_{kind}.csv"), single)
+
+    def test_each_file_starts_with_bom_and_headers(self):
+        _, archive = self.archive()
+
+        self.assertTrue(
+            archive.read("raspisite_groups.csv").startswith(
+                "\ufeffНазвание;Курс;Смена;Куратор;Тег".encode("utf-8")
+            )
+        )
+
+    def test_staff_only(self):
+        self.client.force_login(self.user)
+
+        self.assertEqual(
+            self.client.get(reverse("workshop_export_all")).status_code, 403
+        )
+        self.client.logout()
+        self.assertEqual(
+            self.client.get(reverse("workshop_export_all")).status_code, 302
+        )
+
+    def test_workshop_has_zip_link_and_diary_card(self):
+        page = self.client.get(reverse("workshop"))
+
+        self.assertContains(page, reverse("workshop_export_all"))
+        self.assertContains(page, "Дневник: экспорт и импорт")
+        self.assertNotIn("diary", [key for key, _ in page.context["data_kinds"]])
+        self.assertNotContains(page, '<option value="diary"')
+
+
+class DiaryCsvTests(BaseTestCase):
+    """Оценки дневника в CSV: выгрузка, загрузка «наложить» и «заменить»."""
+
+    HEAD = (
+        "Студент (логин);ФИО;Дата;Номер пары;Предмет;Преподаватель;"
+        "Оценка;Поставил\r\n"
+    )
+    DAY = date(2026, 10, 19)
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        self.second = get_user_model().objects.create_user(
+            "second", password=PASSWORD, last_name="Второв", first_name="Иван"
+        )
+
+    def mark(self, student=None, number=1, kind="score", score=85, **extra):
+        return Mark.objects.create(
+            student=student or self.user, pair=self.pair,
+            lesson_date=self.DAY, pair_number=number, kind=kind,
+            score=score, **extra,
+        )
+
+    def row(self, login="student", day="19.10.2026", number=1, mark="85",
+            giver=""):
+        return (
+            f"{login};;{day};{number};Математика;Иванов И. И.;{mark};{giver}\r\n"
+        )
+
+    def upload(self, content, dry_run=False, mode="overlay", confirm=False):
+        post = {
+            "action": "import_csv", "kind": "diary", "mode": mode,
+            "file": SimpleUploadedFile(
+                "marks.csv", content.encode("utf-8-sig"),
+                content_type="text/csv",
+            ),
+        }
+
+        if dry_run:
+            post["dry_run"] = "1"
+
+        if confirm:
+            post["confirm_replace"] = "1"
+
+        return self.client.post(reverse("workshop"), post)
+
+    def report(self, response):
+        return response.context["import_report"]
+
+    def export(self):
+        return self.client.get(
+            reverse("workshop_export"), {"kind": "diary"}
+        ).content.decode("utf-8-sig").splitlines()
+
+    # --- выгрузка -----------------------------------------------------------
+
+    def test_export_rows(self):
+        self.mark(teacher=self.teacher)
+        self.mark(self.second, kind="absent", score=None)
+        self.mark(number=2, kind="ill", score=None)
+
+        lines = self.export()
+
+        self.assertEqual(lines[0], self.HEAD.strip())
+        self.assertEqual(
+            lines[1],
+            "student;;19.10.2026;1;Математика;Иванов И. И.;85;Иванов И. И.",
+        )
+        self.assertEqual(
+            lines[2], "second;Второв Иван;19.10.2026;1;Математика;Иванов И. И.;Н;"
+        )
+        self.assertEqual(
+            lines[3], "student;;19.10.2026;2;Математика;Иванов И. И.;Б;"
+        )
+
+    def test_headers_match_the_module(self):
+        from diary.csv_marks import HEADERS
+        from schedule.csv_io import KINDS
+
+        self.assertEqual(KINDS["diary"]["headers"], HEADERS)
+
+    def test_template_has_only_headers(self):
+        response = self.client.get(
+            reverse("workshop_export"), {"kind": "diary", "template": "1"}
+        )
+
+        self.assertEqual(
+            response.content.decode("utf-8-sig").strip(), self.HEAD.strip()
+        )
+
+    def test_export_round_trip(self):
+        self.mark(teacher=self.teacher)
+        self.mark(self.second, kind="absent", score=None)
+        before = self.export()
+
+        Mark.objects.all().delete()
+        report = self.report(self.upload("\n".join(before)))
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["created"], 2)
+        self.assertEqual(self.export(), before)
+
+    # --- «наложить» ---------------------------------------------------------
+
+    def test_overlay_creates_updates_and_keeps_others(self):
+        keep = self.mark(self.second, number=3)
+        old = self.mark()
+
+        report = self.report(self.upload(
+            self.HEAD
+            + self.row(mark="Н")
+            + self.row(number=2, mark="70", giver="Иванов И. И.")
+        ))
+
+        self.assertEqual(
+            (report["created"], report["updated"], report["unchanged"]),
+            (1, 1, 0),
+        )
+        self.assertEqual(report["deleted"], 0)
+        old.refresh_from_db()
+        self.assertEqual(old.kind, "absent")
+        self.assertIsNone(old.score)
+        self.assertTrue(Mark.objects.filter(pk=keep.pk).exists())
+        self.assertEqual(
+            Mark.objects.get(pair_number=2).teacher_id, self.teacher.pk
+        )
+
+    def test_same_row_is_unchanged(self):
+        self.mark()
+
+        report = self.report(self.upload(self.HEAD + self.row()))
+
+        self.assertEqual(report["unchanged"], 1)
+        self.assertEqual(Mark.objects.count(), 1)
+
+    def test_iso_date_and_letters_are_understood(self):
+        report = self.report(self.upload(
+            self.HEAD + self.row(day="2026-10-19", mark="б")
+        ))
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(Mark.objects.get().kind, "ill")
+
+    # --- «заменить полностью» -----------------------------------------------
+
+    def test_replace_needs_confirmation(self):
+        self.mark()
+
+        report = self.report(self.upload(
+            self.HEAD + self.row(login="second"), mode="replace"
+        ))
+
+        self.assertIn("подтверждения", report["fatal"])
+        self.assertEqual(Mark.objects.count(), 1)
+        self.assertEqual(Mark.objects.get().student_id, self.user.pk)
+
+    def test_replace_removes_old_marks_and_keeps_only_the_file(self):
+        self.mark()
+        self.mark(number=4)
+
+        report = self.report(self.upload(
+            self.HEAD + self.row(login="second"), mode="replace",
+            confirm=True,
+        ))
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["deleted"], 2)
+        self.assertEqual(report["created"], 1)
+        self.assertTrue(report["saved"])
+        self.assertEqual(
+            list(Mark.objects.values_list("student__username", flat=True)),
+            ["second"],
+        )
+
+    def test_replace_with_errors_deletes_nothing(self):
+        self.mark()
+
+        report = self.report(self.upload(
+            self.HEAD + self.row(login="second") + self.row(login="нет"),
+            mode="replace", confirm=True,
+        ))
+
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertEqual(Mark.objects.count(), 1)
+        self.assertEqual(Mark.objects.get().student_id, self.user.pk)
+
+    def test_dry_run_changes_nothing_in_both_modes(self):
+        self.mark()
+
+        for mode in ("overlay", "replace"):
+            with self.subTest(mode=mode):
+                report = self.report(self.upload(
+                    self.HEAD + self.row(login="second"),
+                    dry_run=True, mode=mode, confirm=True,
+                ))
+
+                self.assertEqual(report["errors"], [])
+                self.assertFalse(report["saved"])
+                self.assertEqual(Mark.objects.count(), 1)
+
+    def test_overlay_mode_ignores_replace_confirmation_without_mode(self):
+        self.mark()
+
+        self.upload(self.HEAD + self.row(login="second"), confirm=True)
+
+        self.assertEqual(Mark.objects.count(), 2)
+
+    # --- ошибки --------------------------------------------------------------
+
+    def test_row_errors_are_listed_and_nothing_is_saved(self):
+        report = self.report(self.upload(
+            self.HEAD
+            + self.row(login="нет")
+            + self.row(login="admin2")
+            + self.row(day="31.02.2026")
+            + self.row(number=9)
+            + self.row(mark="101")
+            + self.row(mark="")
+            + "student;;19.10.2026;1;Химия;Иванов И. И.;5;\r\n"
+            + self.row(giver="Нет Н. Н.")
+            + self.row()
+        ))
+
+        errors = report["errors"]
+
+        self.assertEqual(len(errors), 8)
+        self.assertIn("студент «нет» не найден", errors[0])
+        self.assertIn("студент «admin2» не найден", errors[1])
+        self.assertIn("ДД.ММ.ГГГГ", errors[2])
+        self.assertIn("от 1 до 6", errors[3])
+        self.assertIn("«Оценка»", errors[4])
+        self.assertIn("пуст", errors[5])
+        self.assertIn("не найдена", errors[6])
+        self.assertIn("преподаватель «Нет Н. Н.» не найден", errors[7])
+        self.assertFalse(Mark.objects.exists())
+
+    def test_duplicate_row_is_an_error(self):
+        report = self.report(self.upload(
+            self.HEAD + self.row() + self.row(mark="90")
+        ))
+
+        self.assertIn("повторяет строку", report["errors"][0])
+        self.assertFalse(Mark.objects.exists())
+
+    def test_wrong_headers_are_rejected(self):
+        report = self.report(self.upload("Логин;Оценка\r\nstudent;5\r\n"))
+
+        self.assertIn("заголовок файла не подходит", report["fatal"])
+
+    # --- страница ------------------------------------------------------------
+
+    def test_report_is_shown_in_the_diary_card(self):
+        self.mark()
+
+        response = self.upload(
+            self.HEAD + self.row(login="second"), mode="replace", confirm=True
+        )
+        html = response.content.decode()
+        card = html[html.index("Дневник: экспорт и импорт"):]
+
+        self.assertIn("Дневник (оценки)", card)
+        self.assertIn("прежних оценок: 1", card)
+        # Отчёт один и показан только в карточке дневника
+        self.assertEqual(html.count("workshop-report-title"), 1)
+
+    def test_diary_import_has_bigger_limits(self):
+        from schedule.csv_io import max_bytes
+
+        self.assertGreater(max_bytes("diary"), max_bytes("bells"))
+        self.assertEqual(max_bytes("bells"), 2 * 1024 * 1024)
+
+    def test_staff_only(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("workshop_export"), {"kind": "diary"}
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_import_does_not_query_per_row_for_lookups(self):
+        rows = "".join(self.row(number=n) for n in range(1, 7))
+        self.upload(self.HEAD + rows)
+        Mark.objects.all().delete()
+
+        with CaptureQueriesContext(connection) as ctx:
+            self.upload(self.HEAD + rows)
+
+        pair_lookups = [
+            q for q in ctx.captured_queries if '"Pairs"' in q["sql"]
+            and "WHERE" in q["sql"] and "pair_name" in q["sql"]
+        ]
+
+        self.assertEqual(len(pair_lookups), 1)
 
 
 class MainPageTests(BaseTestCase):
@@ -1956,7 +3947,9 @@ class MainPageTests(BaseTestCase):
     def test_no_script_and_no_advantages_list(self):
         html = self.client.get(reverse("home")).content.decode()
 
-        self.assertNotIn("<script", html)
+        # Скрипты шапки (класс «js», меню) есть на всех страницах; в самой
+        # главной части страницы (внутри <main>) скриптов нет
+        self.assertNotIn("<script", html[html.index("<main"):])
         self.assertNotIn("<ul", html)
         self.assertNotIn("преимущ", html.lower())
 
@@ -2041,28 +4034,28 @@ class CuratorChoiceTests(BaseTestCase):
 
         response = self.client.post(reverse("workshop"), {
             "action": "add_group",
-            "group-group_name": "В-03",
+            "group-group_name": "ПО-103",
             "group-group_course": 1,
             "group-shift": 1,
             "group-group_tag": "",
             "group-group_curator": self.teacher.pk,
-        })
+        }, follow=True)
 
         self.assertContains(response, "Проверьте заполненные поля.")
-        self.assertFalse(Group.objects.filter(group_name="В-03").exists())
+        self.assertFalse(Group.objects.filter(group_name="ПО-103").exists())
 
     def test_new_group_takes_free_curator(self):
         self.client.post(reverse("workshop"), {
             "action": "add_group",
-            "group-group_name": "В-03",
+            "group-group_name": "ПО-103",
             "group-group_course": 1,
             "group-shift": 1,
             "group-group_tag": "",
             "group-group_curator": self.petrov.pk,
-        })
+        }, follow=True)
 
         self.assertEqual(
-            Group.objects.get(group_name="В-03").group_curator_id,
+            Group.objects.get(group_name="ПО-103").group_curator_id,
             self.petrov.pk,
         )
 
@@ -2079,7 +4072,7 @@ class CuratorChoiceTests(BaseTestCase):
             "group-shift": 1,
             "group-group_tag": "",
             "group-group_curator": self.petrov.pk,
-        })
+        }, follow=True)
 
         self.assertContains(response, "Проверьте заполненные поля.")
         self.group.refresh_from_db()
@@ -2098,9 +4091,9 @@ class PairTeacherChoiceTests(BaseTestCase):
         return self.client.post(reverse("workshop"), {
             "action": "add_pair",
             "pair-pair_name": "Физика",
-            "pair-group": self.group.pk,
+            "pair-groups": self.group.pk,
             "pair-teacher": teacher.pk,
-        })
+        }, follow=True)
 
     def test_only_real_teachers_are_offered(self):
         response = self.client.get(reverse("workshop"))
@@ -2128,18 +4121,16 @@ class PairTeacherChoiceTests(BaseTestCase):
         self.assertFalse(Pair.objects.filter(pair_name="Физика").exists())
 
     def test_existing_pair_keeps_its_old_teacher(self):
-        pair = Pair.objects.create(
-            group=self.group, teacher=self.legacy, pair_name="История"
-        )
+        pair = make_pair(self.group, self.legacy, "История")
 
         response = self.client.post(reverse("workshop"), {
             "action": "update_item",
             "edit": "pair",
             "item": pair.pk,
             "pair-pair_name": "Всеобщая история",
-            "pair-group": self.group.pk,
+            "pair-groups": self.group.pk,
             "pair-teacher": self.legacy.pk,
-        })
+        }, follow=True)
 
         self.assertContains(response, "Изменения сохранены")
         pair.refresh_from_db()
@@ -2284,11 +4275,7 @@ class ChangeTestCase(BaseTestCase):
             group_course=self.course,
             shift=self.shift,
         )
-        other_pair = Pair.objects.create(
-            group=other_group,
-            teacher=self.teacher2,
-            pair_name="Физика",
-        )
+        other_pair = make_pair(other_group, self.teacher2, "Физика")
         Day.objects.create(
             group=other_group,
             pair=other_pair,
@@ -2785,11 +4772,7 @@ class MoveTests(ChangeTestCase):
             group_course=self.course,
             shift=self.shift,
         )
-        other_pair = Pair.objects.create(
-            group=other_group,
-            teacher=self.teacher,
-            pair_name="Алгебра",
-        )
+        other_pair = make_pair(other_group, self.teacher, "Алгебра")
         Day.objects.create(
             group=other_group,
             pair=other_pair,
@@ -2848,7 +4831,7 @@ class WorkshopEditTests(BaseTestCase):
         data = {"action": action, "edit": key, "item": item}
         data.update(fields)
 
-        return self.client.post(reverse("workshop"), data)
+        return self.client.post(reverse("workshop"), data, follow=True)
 
     def group_fields(self, **overrides):
         data = {
@@ -2869,11 +4852,7 @@ class WorkshopEditTests(BaseTestCase):
             group_course=self.course,
             shift=self.shift,
         )
-        other_pair = Pair.objects.create(
-            group=other_group,
-            teacher=other_teacher,
-            pair_name="Физика",
-        )
+        other_pair = make_pair(other_group, other_teacher, "Физика")
         Day.objects.create(
             group=other_group,
             pair=other_pair,
@@ -2888,7 +4867,7 @@ class WorkshopEditTests(BaseTestCase):
     def test_edit_button_is_under_add_in_every_card(self):
         response = self.client.get(reverse("workshop"))
 
-        for key in ("tag", "tag_type", "group", "pair"):
+        for key in ("group_tag", "teacher_tag", "group", "pair", "semester"):
             self.assertContains(response, f"edit={key}")
             self.assertFalse(response.context["cards"][key]["editing"])
 
@@ -2934,7 +4913,7 @@ class WorkshopEditTests(BaseTestCase):
 
         self.assertTrue(cards["group"]["editing"])
 
-        for key in ("tag", "tag_type", "teacher", "pair"):
+        for key in ("group_tag", "teacher_tag", "pair"):
             self.assertFalse(cards[key]["editing"])
 
         self.assertEqual(response.content.count(b'value="update_item"'), 1)
@@ -3008,45 +4987,44 @@ class WorkshopEditTests(BaseTestCase):
         self.assertTrue(card["editing"])
         self.assertTrue(card["form"].errors)
 
-    def test_rename_tag_type_and_duplicate_is_rejected(self):
-        first = TagType.objects.create(tag_type_name="Отделение")
-        TagType.objects.create(tag_type_name="Профиль")
-
-        response = self.post(
-            "update_item", "tag_type", first.pk,
-            **{"tag_type-tag_type_name": "Профиль"},
-        )
-
-        self.assertContains(response, "Проверьте заполненные поля.")
-        self.assertEqual(
-            TagType.objects.get(pk=first.pk).tag_type_name, "Отделение"
-        )
-
-        self.post(
-            "update_item", "tag_type", first.pk,
-            **{"tag_type-tag_type_name": "Факультет"},
-        )
-        self.assertEqual(
-            TagType.objects.get(pk=first.pk).tag_type_name, "Факультет"
-        )
-
-    def test_pair_group_cannot_be_changed(self):
+    def test_pair_groups_can_be_attached_and_detached(self):
         _, other_group, _ = self.second_group_with_pair()
 
         self.post(
             "update_item", "pair", self.pair.pk,
             **{
                 "pair-pair_name": "Алгебра",
-                "pair-group": other_group.pk,
+                "pair-groups": [self.group.pk, other_group.pk],
                 "pair-teacher": self.teacher.pk,
             },
         )
 
         pair = Pair.objects.get(pk=self.pair.pk)
         self.assertEqual(pair.pair_name, "Алгебра")
-        self.assertEqual(pair.group_id, self.group.pk)
+        self.assertEqual(
+            set(pair.groups.values_list("pk", flat=True)),
+            {self.group.pk, other_group.pk},
+        )
 
-    def test_pair_teacher_change_checks_schedule_conflict(self):
+    def test_pair_cannot_be_detached_from_group_where_it_is_scheduled(self):
+        _, other_group, _ = self.second_group_with_pair()
+
+        response = self.post(
+            "update_item", "pair", self.pair.pk,
+            **{
+                "pair-pair_name": "Математика",
+                "pair-groups": [other_group.pk],
+                "pair-teacher": self.teacher.pk,
+            },
+        )
+
+        self.assertContains(response, "Проверьте заполненные поля.")
+        self.assertContains(response, "стоит в расписании группы А-01")
+        self.assertTrue(
+            PairGroup.objects.filter(pair=self.pair, group=self.group).exists()
+        )
+
+    def test_pair_teacher_change_warns_about_schedule_conflict(self):
         other_teacher, _, _ = self.second_group_with_pair()
 
         # Понедельник, пара 1: у Петрова уже стоит Физика у группы Б-02
@@ -3054,14 +5032,16 @@ class WorkshopEditTests(BaseTestCase):
             "update_item", "pair", self.pair.pk,
             **{
                 "pair-pair_name": "Математика",
-                "pair-group": self.group.pk,
+                "pair-groups": self.group.pk,
                 "pair-teacher": other_teacher.pk,
             },
         )
 
-        self.assertContains(response, "уже ведёт занятие у группы Б-02")
+        self.assertContains(response, "Изменения сохранены")
+        self.assertContains(response, "Совпадение у преподавателя")
+        self.assertContains(response, "в это же время ведёт занятие у группы Б-02")
         self.assertEqual(
-            Pair.objects.get(pk=self.pair.pk).teacher_id, self.teacher.pk
+            Pair.objects.get(pk=self.pair.pk).teacher_id, other_teacher.pk
         )
 
     def test_pair_teacher_change_without_conflict(self):
@@ -3071,7 +5051,7 @@ class WorkshopEditTests(BaseTestCase):
             "update_item", "pair", self.pair.pk,
             **{
                 "pair-pair_name": "Математика",
-                "pair-group": self.group.pk,
+                "pair-groups": self.group.pk,
                 "pair-teacher": other_teacher.pk,
             },
         )
@@ -3091,8 +5071,9 @@ class WorkshopEditTests(BaseTestCase):
 
         card = response.context["cards"]["group"]
         self.assertTrue(card["confirm"])
-        self.assertIn("пары — 1", card["confirm_text"])
+        self.assertIn("привязки пар — 1", card["confirm_text"])
         self.assertIn("занятия в расписании — 1", card["confirm_text"])
+        self.assertIn("Сами пары останутся", card["confirm_text"])
         self.assertIn("Студенты (1)", card["confirm_text"])
         self.assertContains(response, 'value="delete_confirmed"')
         self.assertNotContains(response, 'value="update_item"')
@@ -3104,7 +5085,9 @@ class WorkshopEditTests(BaseTestCase):
 
         self.assertContains(response, "Удалено: А-01.")
         self.assertFalse(Group.objects.filter(pk=self.group.pk).exists())
-        self.assertFalse(Pair.objects.filter(pk=self.pair.pk).exists())
+        # Пара самостоятельная: остаётся, исчезает только привязка
+        self.assertTrue(Pair.objects.filter(pk=self.pair.pk).exists())
+        self.assertFalse(PairGroup.objects.filter(pair=self.pair).exists())
         self.assertFalse(Day.objects.filter(group_id=self.group.pk).exists())
 
         # Студент остаётся, но без группы
@@ -3127,28 +5110,36 @@ class WorkshopEditTests(BaseTestCase):
             page.context["cards"]["group"]["item"].pk, self.group.pk
         )
 
-    def test_tag_type_with_tags_cannot_be_deleted(self):
-        tag_type = TagType.objects.create(tag_type_name="Отделение")
-        Tag.objects.create(tag_type=tag_type, tag_name="Очное")
-
-        response = self.post("delete_confirmed", "tag_type", tag_type.pk)
-
-        self.assertContains(response, "у него есть теги")
-        self.assertTrue(TagType.objects.filter(pk=tag_type.pk).exists())
-
     def test_tag_is_deleted_and_removed_from_teacher(self):
-        tag_type = TagType.objects.create(tag_type_name="Отделение")
-        tag = Tag.objects.create(tag_type=tag_type, tag_name="Очное")
+        tag = TeacherTag.objects.create(tag_name="Очное")
         self.teacher.teacher_tag = tag
         self.teacher.save()
 
-        response = self.post("delete_item", "tag", tag.pk)
-        self.assertIn("преподаватели — 1", response.context["cards"]["tag"]["confirm_text"])
+        response = self.post("delete_item", "teacher_tag", tag.pk)
+        self.assertIn(
+            "преподавателей: 1",
+            response.context["cards"]["teacher_tag"]["confirm_text"],
+        )
 
-        self.post("delete_confirmed", "tag", tag.pk)
+        self.post("delete_confirmed", "teacher_tag", tag.pk)
 
-        self.assertFalse(Tag.objects.filter(pk=tag.pk).exists())
+        self.assertFalse(TeacherTag.objects.filter(pk=tag.pk).exists())
         self.assertIsNone(Teacher.objects.get(pk=self.teacher.pk).teacher_tag_id)
+
+    def test_group_tag_is_deleted_and_removed_from_group(self):
+        tag = GroupTag.objects.create(tag_name="Очное")
+        self.group.group_tag = tag
+        self.group.save()
+
+        response = self.post("delete_item", "group_tag", tag.pk)
+        self.assertIn(
+            "у групп: 1", response.context["cards"]["group_tag"]["confirm_text"]
+        )
+
+        self.post("delete_confirmed", "group_tag", tag.pk)
+
+        self.assertFalse(GroupTag.objects.filter(pk=tag.pk).exists())
+        self.assertIsNone(Group.objects.get(pk=self.group.pk).group_tag_id)
 
     def test_pair_delete_removes_its_lessons(self):
         self.post("delete_confirmed", "pair", self.pair.pk)
@@ -3179,14 +5170,108 @@ class WorkshopEditTests(BaseTestCase):
 
     def test_adding_still_works(self):
         response = self.client.post(reverse("workshop"), {
-            "action": "add_tag_type",
-            "tag_type-tag_type_name": "Отделение",
-        })
+            "action": "add_group_tag",
+            "group_tag-tag_name": "Очное",
+        }, follow=True)
 
         self.assertContains(response, "Запись добавлена.")
-        self.assertTrue(
-            TagType.objects.filter(tag_type_name="Отделение").exists()
+        self.assertTrue(GroupTag.objects.filter(tag_name="Очное").exists())
+
+
+class WorkshopRedirectTests(BaseTestCase):
+    """После успешного действия Кузня переходит на обычную страницу (GET)."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        self.url = reverse("workshop")
+
+    def post(self, data, **extra):
+        return self.client.post(self.url, data, **extra)
+
+    def add_tag_data(self, name="Очное"):
+        return {
+            "action": "add_group_tag", "group_tag-tag_name": name,
+            "time_shift": 2, "time_mode": "break",
+        }
+
+    def test_successful_add_redirects_and_keeps_shift_and_mode(self):
+        response = self.post(self.add_tag_data())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"], f"{self.url}?time_shift=2&time_mode=break"
         )
+        self.assertTrue(GroupTag.objects.filter(tag_name="Очное").exists())
+
+    def test_reload_after_add_does_not_add_again_and_form_is_empty(self):
+        self.post(self.add_tag_data())
+
+        first = self.client.get(self.url)
+        second = self.client.get(self.url)
+
+        self.assertContains(first, "Запись добавлена.")
+        self.assertNotContains(second, "Запись добавлена.")
+        self.assertEqual(GroupTag.objects.count(), 1)
+        self.assertNotContains(second, 'value="Очное"')
+
+    def test_message_is_shown_once_after_redirect(self):
+        response = self.post(self.add_tag_data(), follow=True)
+
+        self.assertContains(response, "Запись добавлена.", count=1)
+
+    def test_add_forms_switch_browser_autofill_off(self):
+        html = self.client.get(self.url).content.decode()
+
+        self.assertGreaterEqual(html.count('method="post" autocomplete="off"'), 4)
+
+    def test_error_keeps_the_page_and_the_typed_values(self):
+        GroupTag.objects.create(tag_name="Очное")
+
+        response = self.post(self.add_tag_data("очное"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Проверьте заполненные поля.")
+        self.assertContains(response, 'value="очное"')
+
+    def test_update_redirects_back_to_the_same_item(self):
+        tag = TeacherTag.objects.create(tag_name="Высшая")
+
+        response = self.post({
+            "action": "update_item", "edit": "teacher_tag", "item": tag.pk,
+            "teacher_tag-tag_name": "Первая", "teacher_tag-tag_color": "#112233",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("edit=teacher_tag", response["Location"])
+        self.assertIn(f"item={tag.pk}", response["Location"])
+
+    def test_delete_redirects_to_the_picker_without_item(self):
+        tag = TeacherTag.objects.create(tag_name="Высшая")
+
+        response = self.post({
+            "action": "delete_confirmed", "edit": "teacher_tag",
+            "item": tag.pk,
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("edit=teacher_tag", response["Location"])
+        self.assertNotIn("item=", response["Location"])
+
+    def test_saving_bells_redirects(self):
+        response = self.post({
+            "action": "save_times", "time_shift": 1, "time_mode": "study",
+            "time_1_start": "08:00", "time_1_end": "08:45",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("time_shift=1", response["Location"])
+
+    def test_show_time_and_import_do_not_redirect(self):
+        response = self.post({
+            "action": "show_time", "time_shift": 1, "time_mode": "study",
+        })
+
+        self.assertEqual(response.status_code, 200)
 
 
 class CsvTests(BaseTestCase):
@@ -3221,19 +5306,19 @@ class CsvTests(BaseTestCase):
         if dry_run:
             post["dry_run"] = "1"
 
-        return self.client.post(reverse("workshop"), post)
+        return self.client.post(reverse("workshop"), post, follow=True)
 
     def report(self, response):
         return response.context["import_report"]
 
     def fill_extra_data(self):
-        tag_type = TagType.objects.create(tag_type_name="Отделение")
-        tag = Tag.objects.create(tag_type=tag_type, tag_name="Очное")
+        teacher_tag = TeacherTag.objects.create(tag_name="Очное")
+        group_tag = GroupTag.objects.create(tag_name="Очное")
 
-        self.teacher.teacher_tag = tag
+        self.teacher.teacher_tag = teacher_tag
         self.teacher.save()
         self.group.group_curator = self.teacher
-        self.group.group_tag = tag
+        self.group.group_tag = group_tag
         self.group.save()
 
         BreakHours.objects.create(
@@ -3244,9 +5329,7 @@ class CsvTests(BaseTestCase):
         )
 
     def second_pair(self, name="Физика"):
-        return Pair.objects.create(
-            group=self.group, teacher=self.teacher, pair_name=name
-        )
+        return make_pair(self.group, self.teacher, name)
 
     # --- экспорт -----------------------------------------------------------
 
@@ -3309,14 +5392,18 @@ class CsvTests(BaseTestCase):
 
     def test_export_can_be_imported_into_empty_database(self):
         self.fill_extra_data()
+        # Новая группа при загрузке должна называться по образцу (ПО-101)
+        self.group.group_name = "ПО-101"
+        self.group.save()
         files = {kind: self.text(kind) for kind in self.ORDER}
 
         Day.objects.all().delete()
+        PairGroup.objects.all().delete()
         Pair.objects.all().delete()
         Group.objects.all().delete()
         Teacher.objects.all().delete()
-        Tag.objects.all().delete()
-        TagType.objects.all().delete()
+        GroupTag.objects.all().delete()
+        TeacherTag.objects.all().delete()
         StudyHours.objects.all().delete()
         BreakHours.objects.all().delete()
 
@@ -3330,14 +5417,20 @@ class CsvTests(BaseTestCase):
         teacher = Teacher.objects.get(teacher_name="Иванов И. И.")
         self.assertEqual(teacher.teacher_tag.tag_name, "Очное")
 
-        group = Group.objects.get(group_name="А-01")
+        group = Group.objects.get(group_name="ПО-101")
         self.assertEqual(group.group_course_id, 1)
         self.assertEqual(group.shift_id, 1)
         self.assertEqual(group.group_curator_id, teacher.pk)
-        self.assertEqual(group.group_tag.tag_type.tag_type_name, "Отделение")
+        self.assertEqual(group.group_tag.tag_name, "Очное")
+        self.assertEqual(TeacherTag.objects.count(), 1)
+        self.assertEqual(GroupTag.objects.count(), 1)
 
         day = Day.objects.get()
         self.assertEqual(day.pair.pair_name, "Математика")
+        self.assertEqual(
+            list(day.pair.groups.values_list("group_name", flat=True)),
+            ["ПО-101"],
+        )
         self.assertEqual((day.weekday_id, day.pair_number), (1, 1))
 
         self.assertEqual(
@@ -3377,7 +5470,7 @@ class CsvTests(BaseTestCase):
     def test_one_bad_row_saves_nothing(self):
         response = self.upload(
             "teachers",
-            "ФИО;Тег\r\nХороший Х. Х.;\r\nПлохой П. П.;без двоеточия\r\n",
+            "ФИО;Тег\r\nХороший Х. Х.;\r\nПлохой П. П.;" + "Т" * 101 + "\r\n",
         )
         report = self.report(response)
 
@@ -3460,7 +5553,7 @@ class CsvTests(BaseTestCase):
 
     def test_columns_may_be_in_any_order(self):
         response = self.upload(
-            "teachers", "Тег;ФИО\r\nОтделение: Очное;Сидоров С. С.\r\n"
+            "teachers", "Тег;ФИО\r\nОчное;Сидоров С. С.\r\n"
         )
 
         self.assertEqual(self.report(response)["errors"], [])
@@ -3469,15 +5562,41 @@ class CsvTests(BaseTestCase):
 
     # --- содержимое наборов ------------------------------------------------
 
-    def test_tag_is_created_from_text(self):
-        self.upload(
-            "teachers", "ФИО;Тег\r\nНовый Н. Н.;Отделение: Заочное\r\n"
-        )
+    def test_tag_is_created_from_name(self):
+        self.upload("teachers", "ФИО;Тег\r\nНовый Н. Н.;Заочное\r\n")
 
         teacher = Teacher.objects.get(teacher_name="Новый Н. Н.")
         self.assertEqual(teacher.teacher_tag.tag_name, "Заочное")
+        self.assertTrue(TeacherTag.objects.filter(tag_name="Заочное").exists())
+        self.assertFalse(GroupTag.objects.exists())
+
+    def test_existing_tag_is_reused_by_name(self):
+        tag = TeacherTag.objects.create(tag_name="Очное")
+
+        self.upload(
+            "teachers", "ФИО;Тег\r\nПервый П. П.;очное\r\n"
+        )
+
+        teacher = Teacher.objects.get(teacher_name="Первый П. П.")
+        self.assertEqual(teacher.teacher_tag_id, tag.pk)
+        self.assertEqual(TeacherTag.objects.count(), 1)
+
+    def test_group_tag_of_same_name_is_a_different_tag(self):
+        # Тег группы «Очное» не подходит преподавателю: таблицы раздельны
+        group_tag = GroupTag.objects.create(tag_name="Очное")
+
+        self.upload("teachers", "ФИО;Тег\r\nВторой В. В.;Очное\r\n")
+
+        teacher = Teacher.objects.get(teacher_name="Второй В. В.")
+        self.assertEqual(teacher.teacher_tag.tag_name, "Очное")
+        self.assertEqual(TeacherTag.objects.count(), 1)
+        self.assertEqual(GroupTag.objects.get().pk, group_tag.pk)
+
+    def test_export_has_only_the_tag_name(self):
+        self.fill_extra_data()
+
         self.assertEqual(
-            teacher.teacher_tag.tag_type.tag_type_name, "Отделение"
+            self.lines("teachers")[1], "Иванов И. И.;Очное"
         )
 
     def test_group_is_updated_by_name(self):
@@ -3517,7 +5636,48 @@ class CsvTests(BaseTestCase):
         report = self.report(response)
 
         self.assertEqual((report["created"], report["unchanged"]), (1, 1))
-        self.assertEqual(Pair.objects.filter(group=self.group).count(), 2)
+        self.assertEqual(Pair.objects.filter(groups=self.group).count(), 2)
+
+    def test_shared_pair_is_one_pair_with_two_groups(self):
+        other = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+
+        self.upload(
+            "pairs", "Группа;Предмет;Преподаватель\r\n"
+            "А-01;Математика;Иванов И. И.\r\n"
+            "Б-02;Математика;Иванов И. И.\r\n"
+        )
+
+        self.assertEqual(Pair.objects.filter(pair_name="Математика").count(), 1)
+        self.assertEqual(self.pair.groups.count(), 2)
+        self.assertTrue(PairGroup.objects.filter(pair=self.pair, group=other).exists())
+
+    def test_pair_without_group_is_exported_and_imported(self):
+        Pair.objects.create(teacher=self.teacher, pair_name="Свободная")
+
+        self.assertIn(";Свободная;Иванов И. И.", self.text("pairs"))
+
+        Pair.objects.filter(pair_name="Свободная").delete()
+        report = self.report(self.upload(
+            "pairs", "Группа;Предмет;Преподаватель\r\n"
+            ";Свободная;Иванов И. И.\r\n"
+        ))
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["created"], 1)
+        self.assertEqual(Pair.objects.get(pair_name="Свободная").groups.count(), 0)
+
+    def test_export_has_row_per_group_of_shared_pair(self):
+        other = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        PairGroup.objects.create(pair=self.pair, group=other)
+
+        lines = self.lines("pairs")
+
+        self.assertIn("А-01;Математика;Иванов И. И.", lines)
+        self.assertIn("Б-02;Математика;Иванов И. И.", lines)
 
     def test_pairs_need_existing_group_and_teacher(self):
         response = self.upload(
@@ -3566,17 +5726,15 @@ class CsvTests(BaseTestCase):
         errors = self.report(response)["errors"]
 
         self.assertEqual(len(errors), 3)
-        self.assertIn("нет пары «Химия»", errors[0])
+        self.assertIn("не привязана пара «Химия»", errors[0])
         self.assertIn("не учебный день", errors[1])
         self.assertIn("от 1 до 6", errors[2])
 
-    def test_schedule_teacher_cannot_be_in_two_groups(self):
+    def test_schedule_teacher_in_two_groups_is_only_a_warning(self):
         other_group = Group.objects.create(
             group_name="Б-02", group_course=self.course, shift=self.shift
         )
-        Pair.objects.create(
-            group=other_group, teacher=self.teacher, pair_name="Физика"
-        )
+        make_pair(other_group, self.teacher, "Физика")
 
         # Понедельник, пара 1: у Иванова уже стоит Математика у А-01
         response = self.upload(
@@ -3585,8 +5743,24 @@ class CsvTests(BaseTestCase):
         )
         report = self.report(response)
 
-        self.assertIn("стоит сразу у нескольких групп", report["errors"][0])
-        self.assertFalse(Day.objects.filter(group=other_group).exists())
+        self.assertEqual(report["errors"], [])
+        self.assertTrue(report["saved"])
+        self.assertIn("стоит сразу у нескольких групп", report["warnings"][0])
+        self.assertContains(response, "Предупреждения")
+        self.assertTrue(Day.objects.filter(group=other_group).exists())
+
+    def test_schedule_takes_only_pairs_attached_to_the_group(self):
+        other_group = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        make_pair(other_group, self.teacher, "Физика")
+
+        response = self.upload(
+            "schedule", "Группа;День недели;Номер пары;Предмет;Преподаватель\r\n"
+            "А-01;Вторник;1;Физика;Иванов И. И.\r\n"
+        )
+
+        self.assertIn("не привязана пара «Физика»", self.report(response)["errors"][0])
 
     def test_bells_update_and_create(self):
         response = self.upload(
@@ -3726,8 +5900,7 @@ class ScheduleOverviewTests(BaseTestCase):
         )
 
         if subject:
-            pair = Pair.objects.create(
-                group=group, teacher=self.teacher, pair_name=subject
+            pair = make_pair(group, self.teacher, subject
             )
             Day.objects.create(
                 group=group,
@@ -3765,7 +5938,7 @@ class ScheduleOverviewTests(BaseTestCase):
         html = self.client.get(reverse("workshop")).content.decode()
 
         self.assertLess(
-            html.index("<h2>Типы тегов</h2>"),
+            html.index("<h2>Теги преподавателей</h2>"),
             html.index("<h2>Общее расписание</h2>"),
         )
         self.assertIn(f'href="{reverse("overview")}"', html)
@@ -3805,8 +5978,7 @@ class ScheduleOverviewTests(BaseTestCase):
 
     def test_pairs_are_sorted_by_number(self):
         group = self.add_group("Б-02", subject="Физика", number=3)
-        pair = Pair.objects.create(
-            group=group, teacher=self.teacher, pair_name="Химия"
+        pair = make_pair(group, self.teacher, "Химия"
         )
         Day.objects.create(
             group=group, pair=pair, pair_number=1,
@@ -3902,6 +6074,7 @@ class ScheduleOverviewTests(BaseTestCase):
     def test_one_off_changes_are_not_shown(self):
         ScheduleChange.objects.create(
             calendar=Calendar.objects.create(date=MONDAY, weekday=1),
+            group=self.group,
             pair=self.pair,
             old_pair_number=1,
             change_type="CANCEL",
@@ -3945,7 +6118,6 @@ class PageHeaderTests(BaseTestCase):
             ("users", None, "ПОЛЬЗОВАТЕЛИ"),
             ("workshop", None, "КУЗНЯ"),
             ("overview", None, "ОБЩЕЕ РАСПИСАНИЕ"),
-            ("group_schedule", group, "РАСПИСАНИЕ"),
             ("group_edit", group, "РЕДАКТОР РАСПИСАНИЯ"),
         ]
 
@@ -3979,24 +6151,53 @@ class PageHeaderTests(BaseTestCase):
                     head.index("<h1>"), head.index('class="page-head-actions"')
                 )
 
-    def test_caption_shows_context_above_the_static_title(self):
-        head = header_of(
-            self.open("group_schedule", [self.group.pk])
+    def test_group_schedule_has_name_as_big_heading_with_caption_above(self):
+        response = self.open("group_schedule", [self.group.pk])
+        head = header_of(response)
+        card = reverse("group_card", args=[self.group.pk])
+
+        self.assertContains(response, "<h1>", count=1)
+        self.assertLess(
+            head.index("Расписание группы"), head.index("<h1>")
         )
+        self.assertRegex(
+            head,
+            r'<h1><a class="page-head-link"\s+href="%s"[^>]*>%s</a></h1>'
+            % (re.escape(card), re.escape(self.group.group_name)),
+        )
+        self.assertNotIn("РАСПИСАНИЕ", head)
+
+    def test_teacher_schedule_has_name_as_big_heading_with_caption_above(self):
+        response = self.open("teachers", params={"teacher": self.teacher.pk})
+        head = header_of(response)
+        card = reverse("teacher_card", args=[self.teacher.pk])
 
         self.assertLess(
-            head.index(self.group.group_name),
-            head.index("<h1>РАСПИСАНИЕ</h1>"),
+            head.index("Расписание преподавателя"), head.index("<h1>")
         )
+        self.assertRegex(
+            head,
+            r'<h1><a class="page-head-link"\s+href="%s"[^>]*>%s</a></h1>'
+            % (re.escape(card), re.escape(self.teacher.teacher_name)),
+        )
+        self.assertNotIn("ПРЕПОДАВАТЕЛИ", head)
 
-        head = header_of(
-            self.open("teachers", params={"teacher": self.teacher.pk})
-        )
+    def test_teachers_page_without_choice_keeps_static_title(self):
+        head = header_of(self.open("teachers"))
 
-        self.assertLess(
-            head.index(self.teacher.teacher_name),
-            head.index("<h1>ПРЕПОДАВАТЕЛИ</h1>"),
-        )
+        self.assertIn("<h1>ПРЕПОДАВАТЕЛИ</h1>", head)
+        self.assertNotIn("page-head-link", head)
+
+    def test_no_profile_buttons_in_actions(self):
+        for name, args, params in (
+            ("group_schedule", [self.group.pk], None),
+            ("teachers", None, {"teacher": self.teacher.pk}),
+        ):
+            head = header_of(self.open(name, args, params))
+            actions = head[head.index("page-head-actions"):]
+
+            self.assertNotIn("Профиль", actions)
+            self.assertNotIn("/profile/", actions)
 
     def test_group_page_buttons_are_in_actions_for_admin_only(self):
         args = [self.group.pk]
@@ -4032,6 +6233,10 @@ class TeacherSearchTests(BaseTestCase):
     def open(self, **params):
         self.client.force_login(self.user)
 
+        with fake_today(MONDAY):
+            return self.client.get(reverse("teachers"), params)
+
+    def open_logged_in(self, **params):
         with fake_today(MONDAY):
             return self.client.get(reverse("teachers"), params)
 
@@ -4080,13 +6285,14 @@ class TeacherSearchTests(BaseTestCase):
         self.assertIn("hidden", match.group(0))
 
     def test_query_count_does_not_grow_with_teachers(self):
-        with CaptureQueriesContext(connection) as few:
-            self.open()
+        # Вход и первый запрос в подсчёт не входят: считаются два одинаковых
+        # запроса страницы подряд
+        self.open()
 
-        tag = Tag.objects.create(
-            tag_type=TagType.objects.create(tag_type_name="Категория"),
-            tag_name="Высшая",
-        )
+        with CaptureQueriesContext(connection) as few:
+            self.open_logged_in()
+
+        tag = TeacherTag.objects.create(tag_name="Высшая")
 
         for index in range(5):
             Teacher.objects.create(
@@ -4094,7 +6300,7 @@ class TeacherSearchTests(BaseTestCase):
             )
 
         with CaptureQueriesContext(connection) as many:
-            self.open()
+            self.open_logged_in()
 
         self.assertEqual(len(many), len(few))
 
@@ -4145,34 +6351,32 @@ class TagPreviewTests(BaseTestCase):
     def test_add_form_has_preview_after_the_color_field(self):
         html = self.open().content.decode()
 
-        self.assertEqual(html.count(self.MARK), 1)
+        # Две формы добавления тегов — два предпросмотра
+        self.assertEqual(html.count(self.MARK), 2)
         self.assertLess(
-            html.index('name="tag-tag_color"'), html.index(self.MARK)
+            html.index('name="group_tag-tag_color"'), html.index(self.MARK)
         )
 
     def test_edit_form_has_preview(self):
-        tag = Tag.objects.create(
-            tag_type=TagType.objects.create(tag_type_name="Категория"),
-            tag_name="Высшая",
-        )
+        tag = TeacherTag.objects.create(tag_name="Высшая")
 
-        html = self.open(edit="tag", item=tag.pk).content.decode()
+        html = self.open(edit="teacher_tag", item=tag.pk).content.decode()
 
-        self.assertEqual(html.count(self.MARK), 1)
-        self.assertLess(
-            html.index('name="tag-tag_color"'), html.index(self.MARK)
-        )
+        # Своя форма изменения и форма добавления тега групп
+        self.assertEqual(html.count(self.MARK), 2)
+        self.assertIn('name="teacher_tag-tag_color"', html)
 
     def test_no_preview_before_a_tag_is_chosen_for_editing(self):
-        html = self.open(edit="tag").content.decode()
+        html = self.open(edit="teacher_tag").content.decode()
 
-        self.assertEqual(html.count(self.MARK), 0)
+        # Остаётся только форма добавления тега групп
+        self.assertEqual(html.count(self.MARK), 1)
 
     def test_other_cards_have_no_preview(self):
         html = self.open(edit="group").content.decode()
 
-        # Только форма добавления тега
-        self.assertEqual(html.count(self.MARK), 1)
+        # Только формы добавления тегов
+        self.assertEqual(html.count(self.MARK), 2)
 
 
 class TeacherShiftButtonsTests(BaseTestCase):
@@ -4324,12 +6528,21 @@ class MainPageChoiceTests(BaseTestCase):
         self.assertIn("Расписание", html)
         self.assertIn("Дневник", html)
 
-    def test_diary_is_not_a_link_yet(self):
+    def test_diary_leads_to_the_diary(self):
         html = self.open().content.decode()
 
-        self.assertIn('<span class="hero-choice-link is-soon"', html)
-        self.assertNotIn('<a class="hero-choice-link is-soon"', html)
-        self.assertIn('title="Дневник появится позже"', html)
+        self.assertIn(
+            f'<a class="hero-choice-link" href="{reverse("diary_home")}">',
+            html,
+        )
+        self.assertNotIn("is-soon", html)
+
+    def test_menu_has_the_diary_link(self):
+        self.client.force_login(self.user)
+
+        page = self.client.get(reverse("groups"))
+
+        self.assertContains(page, f'href="{reverse("diary_home")}"')
 
     def schedule_link(self):
         html = self.open().content.decode()
@@ -4358,3 +6571,927 @@ class MainPageChoiceTests(BaseTestCase):
         page = self.client.get(reverse("groups"))
 
         self.assertContains(page, "filter.js")
+
+
+class CourseShiftPillsTests(BaseTestCase):
+    """Курс и смена рядом с группой: цифры в плашках, полный текст в title."""
+
+    PILLS = (
+        '<span class="group-pill" title="1 курс">1</span>'
+        '<span class="group-pill" title="1 смена">1</span>'
+    )
+
+    def page(self, name, *args):
+        self.client.force_login(self.admin)
+
+        with fake_today(MONDAY):
+            return self.client.get(reverse(name, args=args))
+
+    def test_pills_on_every_page_with_a_group_name(self):
+        pages = [
+            page
+            for page in (
+                self.page("group_schedule", self.group.pk),
+                self.page("groups"),
+                self.page("overview"),
+                self.page("group_edit", self.group.pk),
+            )
+        ]
+
+        for page in pages:
+            self.assertContains(page, self.PILLS)
+
+    def test_old_gray_text_is_gone(self):
+        page = self.page("group_schedule", self.group.pk)
+
+        self.assertNotContains(page, "1 курс\n")
+        self.assertNotContains(page, "1 курс ·")
+
+    def test_pill_style_is_dark_digits_on_light_gray(self):
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+        rule = re.search(r"\.group-pill \{(.*?)\}", css, re.S).group(1)
+
+        self.assertIn("background: #e5e7eb", rule)
+        self.assertIn("color: #111827", rule)
+        self.assertIn("font-weight: 700", rule)
+
+
+class ProfileNamingTests(BaseTestCase):
+    """«Карточка» переименована в «Профиль»: надписи и адреса."""
+
+    def test_urls_end_with_profile(self):
+        self.assertEqual(
+            reverse("student_card", args=[5]), "/students/5/profile/"
+        )
+        self.assertEqual(
+            reverse("teacher_card", args=[5]), "/teachers/5/profile/"
+        )
+        self.assertEqual(
+            reverse("group_card", args=[5]), "/groups/5/profile/"
+        )
+
+    def test_no_card_word_on_pages(self):
+        self.client.force_login(self.admin)
+
+        with fake_today(MONDAY):
+            for name, args in (
+                ("group_schedule", [self.group.pk]),
+                ("groups", []),
+                ("teachers", []),
+                ("group_card", [self.group.pk]),
+                ("teacher_card", [self.teacher.pk]),
+            ):
+                page = self.client.get(reverse(name, args=args))
+
+                self.assertEqual(page.status_code, 200)
+                self.assertNotContains(page, "арточк")
+
+        self.assertContains(page, "Профиль")
+
+    def test_group_schedule_name_leads_to_profile(self):
+        self.client.force_login(self.admin)
+
+        with fake_today(MONDAY):
+            page = self.client.get(
+                reverse("group_schedule", args=[self.group.pk])
+            )
+
+        self.assertContains(
+            page,
+            reverse("group_card", args=[self.group.pk]),
+        )
+        self.assertContains(page, 'title="Профиль группы"')
+
+
+class LinkStyleTests(TestCase):
+    """Ссылки без подчёркивания: оно появляется только при наведении."""
+
+    def setUp(self):
+        self.css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+
+    def test_links_are_not_underlined_by_default(self):
+        rule = re.search(r"\na \{(.*?)\}", self.css, re.S).group(1)
+
+        self.assertIn("text-decoration: none", rule)
+
+    def test_underline_on_hover_only(self):
+        rule = re.search(
+            r"\na:hover,\na:focus-visible \{(.*?)\}", self.css, re.S
+        ).group(1)
+
+        self.assertIn("text-decoration: underline", rule)
+
+    def test_buttons_are_not_underlined_on_hover(self):
+        self.assertRegex(
+            self.css, r"a\.date-nav-link:hover,[^{]*\{\s*text-decoration: none"
+        )
+
+
+class GroupNameRuleTests(BaseTestCase):
+    """Название группы: две заглавные русские буквы, дефис, три цифры."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def add(self, name, course=1):
+        return self.client.post(reverse("workshop"), {
+            "action": "add_group",
+            "group-group_name": name,
+            "group-group_course": course,
+            "group-shift": 1,
+            "group-group_tag": "",
+            "group-group_curator": "",
+        }, follow=True)
+
+    def rename(self, group, name, course=1):
+        return self.client.post(reverse("workshop"), {
+            "action": "update_item",
+            "edit": "group",
+            "item": group.pk,
+            "group-group_name": name,
+            "group-group_course": course,
+            "group-shift": 1,
+            "group-group_tag": "",
+            "group-group_curator": "",
+        }, follow=True)
+
+    def test_valid_names_pass(self):
+        for name in ("ПО-107", "ИС-101", "ЁЖ-399", "АБ-199"):
+            self.assertEqual(check_group_name(name), name)
+
+    def test_wrong_names_are_rejected(self):
+        for name in (
+            "ПО107", "по-107", "По-107", "ПО-17", "ПО-1070", "П-107",
+            "ПОО-107", "ПО–107", "ПО 107", "PO-107", "ПO-107", "ПО-1O7",
+            "ПО-100", "ПО-007", "", "А-01",
+        ):
+            with self.assertRaises(ValueError, msg=name):
+                check_group_name(name)
+
+    def test_course_is_compared_with_the_first_digit_only(self):
+        self.assertEqual(check_group_name("ПО-307", 3), "ПО-307")
+
+        with self.assertRaises(ValueError):
+            check_group_name("ПО-307", 1)
+
+    def test_standard_name_helper(self):
+        self.assertTrue(is_standard_name("ПО-107"))
+        self.assertFalse(is_standard_name("А-01"))
+        self.assertFalse(is_standard_name(None))
+
+    def test_form_creates_group_with_good_name(self):
+        self.add("ПО-107")
+
+        self.assertTrue(Group.objects.filter(group_name="ПО-107").exists())
+
+    def test_form_rejects_bad_name_with_hint(self):
+        response = self.add("Группа-1")
+
+        self.assertContains(response, "Проверьте заполненные поля.")
+
+        form = response.context["cards"]["group"]["form"]
+        self.assertIn("две заглавные русские буквы", form.errors["group_name"][0])
+        self.assertFalse(Group.objects.filter(group_name="Группа-1").exists())
+
+    def test_form_rejects_latin_and_lowercase(self):
+        for name in ("PO-107", "по-107"):
+            self.add(name)
+
+            self.assertFalse(Group.objects.filter(group_name=name).exists())
+
+    def test_form_rejects_course_mismatch(self):
+        Course.objects.get_or_create(course_id=2)
+
+        response = self.add("ПО-107", course=2)
+
+        self.assertContains(response, "не совпадает с выбранным курсом")
+        self.assertFalse(Group.objects.filter(group_name="ПО-107").exists())
+
+    def test_old_group_can_be_edited_while_its_name_stays(self):
+        Course.objects.get_or_create(course_id=2)
+
+        response = self.rename(self.group, "А-01", course=2)
+
+        self.assertContains(response, "Изменения сохранены")
+        self.assertEqual(
+            Group.objects.get(pk=self.group.pk).group_course_id, 2
+        )
+
+    def test_old_group_cannot_be_renamed_to_a_bad_name(self):
+        response = self.rename(self.group, "А-02")
+
+        self.assertContains(response, "Проверьте заполненные поля.")
+        self.assertEqual(Group.objects.get(pk=self.group.pk).group_name, "А-01")
+
+    def test_old_group_can_be_renamed_to_a_good_name(self):
+        self.rename(self.group, "ПО-101")
+
+        self.assertEqual(
+            Group.objects.get(pk=self.group.pk).group_name, "ПО-101"
+        )
+
+    def test_good_name_cannot_get_a_wrong_course_later(self):
+        Course.objects.get_or_create(course_id=2)
+        self.rename(self.group, "ПО-101")
+
+        response = self.rename(self.group, "ПО-101", course=2)
+
+        self.assertContains(response, "не совпадает с выбранным курсом")
+
+    def test_name_field_shows_example(self):
+        response = self.client.get(reverse("workshop"))
+
+        self.assertContains(response, 'placeholder="ПО-107"')
+
+    def upload(self, text):
+        return self.client.post(reverse("workshop"), {
+            "action": "import_csv",
+            "kind": "groups",
+            "file": SimpleUploadedFile(
+                "data.csv", text.encode("utf-8-sig"), content_type="text/csv"
+            ),
+        })
+
+    def test_csv_creates_new_group_with_good_name(self):
+        response = self.upload(
+            "Название;Курс;Смена;Куратор;Тег\r\nПО-107;1;1;;\r\n"
+        )
+
+        self.assertEqual(response.context["import_report"]["created"], 1)
+        self.assertTrue(Group.objects.filter(group_name="ПО-107").exists())
+
+    def test_csv_rejects_new_group_with_bad_name_or_course(self):
+        response = self.upload(
+            "Название;Курс;Смена;Куратор;Тег\r\n"
+            "Новая;1;1;;\r\n"
+            "ПО-207;1;1;;\r\n"
+        )
+        report = response.context["import_report"]
+
+        self.assertEqual(len(report["errors"]), 2)
+        self.assertIn("две заглавные русские буквы", report["errors"][0])
+        self.assertIn("не совпадает", report["errors"][1])
+        self.assertEqual(Group.objects.count(), 1)
+
+    def test_csv_still_updates_old_group_by_its_name(self):
+        response = self.upload(
+            "Название;Курс;Смена;Куратор;Тег\r\nА-01;1;1;;\r\n"
+        )
+        report = response.context["import_report"]
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["created"], 0)
+
+
+class ShortNameTests(TestCase):
+    """«Фамилия Имя Отчество» в списках: «Отчество И. И.»."""
+
+    def test_full_name_becomes_patronymic_and_two_initials(self):
+        self.assertEqual(
+            short_name("Иванов Иван Константинович"), "Константинович И. И."
+        )
+        self.assertEqual(
+            short_name("Салтыков-Щедрин Михаил Евграфович"), "Евграфович М. С."
+        )
+
+    def test_without_patronymic_it_is_surname_and_initial(self):
+        self.assertEqual(short_name("Петров Пётр"), "Петров П.")
+
+    def test_unparsable_and_already_short_names_stay(self):
+        for name in ("Иванов И. И.", "Иванов И.", "Иванов", "А Б В Г", ""):
+            self.assertEqual(short_name(name), name)
+
+    def test_extra_spaces_are_ignored(self):
+        self.assertEqual(short_name("  Иванов   Иван  Иванович "), "Иванович И. И.")
+
+    def test_split_name(self):
+        self.assertEqual(
+            split_name("Иванов Иван Иванович"), ("Иванов", "Иван", "Иванович")
+        )
+        self.assertEqual(split_name("Иванов Иван"), ("Иванов", "Иван", ""))
+        self.assertIsNone(split_name("Иванов И. И."))
+
+    def test_html_has_full_name_in_title(self):
+        html = person_html("Иванов Иван Константинович")
+
+        self.assertEqual(
+            str(html),
+            '<span class="person-name" title="Иванов Иван Константинович">'
+            "Константинович И. И.</span>",
+        )
+
+    def test_html_is_escaped_and_plain_when_nothing_to_shorten(self):
+        self.assertEqual(str(person_html("Иванов И. И.")), "Иванов И. И.")
+        self.assertNotIn("<script>", str(person_html('Х<script> Ы"')))
+
+
+class FullNameDisplayTests(BaseTestCase):
+    """Где ФИО короткое, а где полное."""
+
+    FULL = "Иванов Иван Константинович"
+    SHORT = "Константинович И. И."
+
+    def setUp(self):
+        self.teacher.teacher_name = self.FULL
+        self.teacher.save()
+        self.group.group_curator = self.teacher
+        self.group.save()
+        self.client.force_login(self.admin)
+
+    def get(self, name, *args, **params):
+        with fake_today(MONDAY):
+            return self.client.get(reverse(name, args=args), params)
+
+    def test_schedule_cell_shows_short_name_with_full_hint(self):
+        page = self.get("group_schedule", self.group.pk)
+
+        self.assertContains(page, self.SHORT)
+        self.assertContains(page, f'title="{self.FULL}"')
+
+    def test_teacher_list_shows_short_name_but_search_uses_full(self):
+        page = self.get("teachers")
+
+        self.assertContains(page, self.SHORT)
+        self.assertContains(page, f'data-filter-text="{self.FULL}"')
+
+    def test_big_headings_show_full_name(self):
+        page = self.get("teacher_card", self.teacher.pk)
+        self.assertContains(page, f">{self.FULL}</h1>")
+
+        page = self.get("teachers", teacher=self.teacher.pk)
+        self.assertContains(page, f">{self.FULL}</a></h1>")
+
+    def test_group_card_list_is_short_and_curator_tile_is_full(self):
+        page = self.get("group_card", self.group.pk)
+
+        self.assertContains(page, f">{self.FULL}</a>")
+        self.assertContains(page, self.SHORT)
+
+    def test_select_options_show_full_name(self):
+        page = self.get("users")
+
+        self.assertContains(page, f"А-01 · куратор: {self.FULL}")
+
+    def test_new_user_form_order_is_name_patronymic_surname(self):
+        form = self.get("users").context["new_user_form"]
+
+        self.assertEqual(
+            list(form.fields),
+            ["role", "first_name", "patronymic", "last_name",
+             "username", "password", "group"],
+        )
+
+    def test_patronymic_label_does_not_say_optional(self):
+        form = self.get("users").context["new_user_form"]
+
+        self.assertEqual(form.fields["patronymic"].label, "Отчество")
+        self.assertFalse(form.fields["patronymic"].required)
+        self.assertEqual(form.fields["first_name"].label, "Имя")
+        self.assertEqual(form.fields["last_name"].label, "Фамилия")
+
+    def test_form_page_lists_fields_in_that_order(self):
+        html = self.get("users").content.decode()
+
+        positions = [
+            html.index(f'name="new_user-{name}"')
+            for name in ("first_name", "patronymic", "last_name")
+        ]
+
+        self.assertEqual(positions, sorted(positions))
+
+
+class SiteHeaderTests(BaseTestCase):
+    """Шапка: «Выйти» без почты, меню-бургер и кнопка «Назад»."""
+
+    def get(self, name, *args, who=None, **params):
+        if who is not None:
+            self.client.force_login(who)
+
+        with fake_today(MONDAY):
+            return self.client.get(reverse(name, args=args), params)
+
+    def back_url(self, response):
+        return response.context["nav_back_url"]
+
+    def test_logout_button_has_no_email(self):
+        page = self.get("groups", who=self.admin)
+
+        self.assertRegex(page.content.decode(), r">\s*Выйти\s*</button>")
+        self.assertNotContains(page, "Выйти (")
+
+    def test_email_is_a_muted_line_in_the_menu_and_a_hint_on_the_button(self):
+        page = self.get("groups", who=self.admin)
+
+        self.assertContains(
+            page, f'<p class="nav-user">{self.admin.get_username()}</p>'
+        )
+        self.assertContains(
+            page, f'title="{self.admin.get_username()}"'
+        )
+
+    def test_menu_button_and_script_for_logged_in_users_only(self):
+        page = self.get("groups", who=self.admin)
+
+        self.assertContains(page, "data-nav-toggle")
+        self.assertContains(page, 'aria-expanded="false"')
+        self.assertContains(page, "nav.js")
+        self.assertContains(page, 'className += " js"')
+
+        self.client.logout()
+        page = self.client.get(reverse("login"))
+
+        self.assertNotContains(page, "data-nav-toggle")
+
+    def test_back_button_is_after_logout_in_the_header(self):
+        html = self.get("groups", who=self.admin).content.decode()
+
+        self.assertIn("data-back", html)
+        self.assertLess(html.index("nav-logout"), html.index("nav-back"))
+        self.assertLess(html.index("nav-back"), html.index("</header>"))
+
+    def test_no_back_button_on_home_and_login(self):
+        self.client.force_login(self.admin)
+
+        with fake_today(MONDAY):
+            home = self.client.get("/")
+
+        self.assertNotContains(home, "data-back")
+        self.assertIsNone(home.context["nav_back_url"])
+
+        self.client.logout()
+
+        self.assertNotContains(self.client.get(reverse("login")), "data-back")
+
+    def test_fallback_parent_of_each_page(self):
+        group = self.group.pk
+        cases = (
+            (("group_schedule", group), reverse("groups")),
+            (("group_edit", group), reverse("group_schedule", args=[group])),
+            (("group_card", group), reverse("groups")),
+            (("teacher_card", self.teacher.pk), reverse("teachers")),
+            (("student_card", self.user.pk), reverse("users")),
+            (("groups",), reverse("home")),
+            (("users",), reverse("home")),
+            (("calendar",), reverse("home")),
+        )
+
+        self.client.force_login(self.admin)
+
+        for (name, *args), expected in cases:
+            with self.subTest(page=name):
+                self.assertEqual(
+                    self.back_url(self.get(name, *args)), expected
+                )
+
+    def test_page_own_back_url_is_not_overwritten(self):
+        # change.html сам передаёт back_url: шапка использует отдельное имя
+        response = self.get("groups", who=self.admin)
+
+        self.assertIn("nav_back_url", response.context)
+        self.assertNotIn("back_url", response.context)
+
+    def test_script_goes_back_in_history_only_within_the_site(self):
+        script = (STATIC_DIR / "nav.js").read_text(encoding="utf-8")
+
+        self.assertIn("history.back()", script)
+        self.assertIn("document.referrer", script)
+        self.assertIn("from.origin === window.location.origin", script)
+        self.assertIn("data-back", script)
+        self.assertIn("Escape", script)
+
+    def test_burger_breakpoint_is_in_css(self):
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn("@media (max-width: 1340px)", css)
+        self.assertRegex(css, r"\.js \.nav-toggle ~ \.main-nav \{\s*display: none")
+        self.assertRegex(css, r"\.nav-toggle,\s*\.nav-user \{\s*display: none")
+
+    def test_profile_heads_have_no_back_buttons(self):
+        for name, args in (
+            ("student_card", [self.user.pk]),
+            ("teacher_card", [self.teacher.pk]),
+            ("group_card", [self.group.pk]),
+        ):
+            with self.subTest(page=name):
+                head = header_of(self.get(name, *args, who=self.admin))
+
+                self.assertNotIn("←", head)
+                self.assertNotIn("К пользователям", head)
+
+
+def tile_labels(response):
+    """Подписи плиток профиля по порядку."""
+    return re.findall(r"<dt>(.*?)</dt>", response.content.decode())
+
+
+class ProfileTilesTests(BaseTestCase):
+    """Профили плитками: состав, ссылки, «Редактировать», «Расписание»."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.group.group_curator = self.teacher
+        self.group.save()
+        set_group(self.user, self.group)
+        self.teacher_user = User.objects.get(username="teacherivanov@gmail.com")
+        self.student_url = reverse("student_card", args=[self.user.pk])
+        self.teacher_url = reverse("teacher_card", args=[self.teacher.pk])
+        self.group_url = reverse("group_card", args=[self.group.pk])
+
+    def open(self, who, url):
+        self.client.force_login(who)
+
+        return self.client.get(url)
+
+    def tag_group(self):
+        self.tag = GroupTag.objects.create(tag_name="Высшая")
+        self.group.group_tag = self.tag
+        self.group.save()
+
+    # --- состав плиток -------------------------------------------------------
+
+    def test_student_has_four_tiles(self):
+        response = self.open(self.admin, self.student_url)
+
+        self.assertEqual(
+            tile_labels(response),
+            ["Учится в группе", "Куратор студента", "Курс и смена",
+             "Почта (логин)"],
+        )
+        self.assertContains(response, "profile-facts cols-4")
+        self.assertContains(response, "1 курс<span")
+        self.assertContains(response, "|</span>1 смена")
+
+    def test_student_tiles_link_to_group_and_curator(self):
+        response = self.open(self.admin, self.student_url)
+
+        self.assertContains(
+            response, f'href="{self.group_url}">А-01</a>'
+        )
+        self.assertContains(
+            response, f'href="{self.teacher_url}">{self.teacher.teacher_name}</a>'
+        )
+
+    def test_student_without_group_has_placeholders(self):
+        set_group(self.user, None)
+
+        response = self.open(self.admin, self.student_url)
+
+        self.assertEqual(len(tile_labels(response)), 4)
+        self.assertContains(response, "не назначена")
+        self.assertContains(response, "нет</span>")
+        self.assertNotContains(response, "курс<span")
+
+    def test_teacher_has_three_tiles_and_pairs_section(self):
+        response = self.open(self.admin, self.teacher_url)
+
+        self.assertEqual(
+            tile_labels(response),
+            ["Тег преподавателя", "Курирует", "Учётная запись"],
+        )
+        self.assertContains(response, "profile-facts cols-3")
+        self.assertContains(
+            response,
+            'Пары <span class="profile-count">1</span>',
+        )
+        self.assertContains(response, f'href="{self.group_url}">А-01</a>', count=2)
+
+    def test_group_has_three_tiles_and_two_sections_with_counts(self):
+        response = self.open(self.admin, self.group_url)
+
+        self.assertEqual(
+            tile_labels(response), ["Тег группы", "Куратор", "Курс и смена"]
+        )
+        self.assertContains(
+            response, 'Студенты <span class="profile-count">1</span>'
+        )
+        self.assertContains(
+            response, 'Пары <span class="profile-count">1</span>'
+        )
+        self.assertContains(response, "1 курс<span")
+
+    def test_group_students_list_is_numbered_and_short(self):
+        self.user.last_name, self.user.first_name = "Абрамов", "Аркадий"
+        self.user.save()
+
+        response = self.open(self.admin, self.group_url)
+
+        self.assertContains(response, '<span class="num">1</span>')
+        self.assertContains(response, 'title="Абрамов Аркадий">Абрамов А.</span>')
+
+    def test_group_student_count_is_shown_to_everyone(self):
+        stranger = get_user_model().objects.create_user(
+            "stranger", password=PASSWORD
+        )
+
+        response = self.open(stranger, self.group_url)
+
+        self.assertContains(
+            response, 'Студенты <span class="profile-count">1</span>'
+        )
+        self.assertContains(response, "Список студентов видят")
+
+    # --- ссылки на тег ---------------------------------------------------------
+
+    def test_tag_tile_leads_admin_to_users_with_that_tag(self):
+        self.tag_group()
+        link = f'href="{reverse("users")}?tag=g{self.tag.pk}"'
+
+        self.assertContains(self.open(self.admin, self.group_url), link)
+
+        for who in (self.user, self.teacher_user):
+            self.assertNotContains(self.open(who, self.group_url), link)
+
+    def test_tag_link_opens_filtered_users_page(self):
+        self.tag_group()
+
+        response = self.open(
+            self.admin, f"{reverse('users')}?tag=g{self.tag.pk}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.student_url)
+
+    # --- кнопки ---------------------------------------------------------------
+
+    def head(self, who, url):
+        html = self.open(who, url).content.decode()
+
+        return html[html.index("page-head-actions"):html.index("</header>")]
+
+    def test_every_profile_has_schedule_button(self):
+        self.assertIn(
+            reverse("group_schedule", args=[self.group.pk]),
+            self.head(self.admin, self.student_url),
+        )
+        self.assertIn(
+            f"{reverse('teachers')}?teacher={self.teacher.pk}",
+            self.head(self.admin, self.teacher_url),
+        )
+        self.assertIn(
+            reverse("group_schedule", args=[self.group.pk]),
+            self.head(self.admin, self.group_url),
+        )
+
+        for url in (self.student_url, self.teacher_url, self.group_url):
+            self.assertIn("Расписание", self.head(self.admin, url))
+
+    def test_edit_button_is_for_admin_only(self):
+        for url in (self.student_url, self.teacher_url, self.group_url):
+            self.assertIn("Редактировать", self.head(self.admin, url))
+            self.assertNotIn("Редактировать", self.head(self.teacher_user, url))
+
+    def test_group_edit_button_leads_to_group_editor(self):
+        self.assertIn(
+            reverse("group_edit", args=[self.group.pk]),
+            self.head(self.admin, self.group_url),
+        )
+
+    def test_user_edit_button_leads_to_the_row_on_users_page(self):
+        head = self.head(self.admin, self.student_url)
+        query = urlencode({"q": self.user.get_username(), "new": self.user.pk})
+
+        self.assertIn(f"{reverse('users')}?{query}".replace("&", "&amp;"), head)
+
+        response = self.open(
+            self.admin, f"{reverse('users')}?{query}"
+        )
+
+        self.assertContains(response, self.student_url)
+        self.assertContains(response, 'class="is-new"')
+
+    def test_teacher_without_account_has_no_edit_button(self):
+        legacy = Teacher.objects.create(teacher_name="Старый С. С.")
+
+        head = self.head(
+            self.admin, reverse("teacher_card", args=[legacy.pk])
+        )
+
+        self.assertNotIn("Редактировать", head)
+
+    # --- стили ----------------------------------------------------------------
+
+    def test_css_has_two_tile_wide_lists_and_mobile_rows(self):
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertRegex(css, r"\.profile-section \{\s*grid-column: span 2;")
+        self.assertRegex(css, r"\.profile-facts\.cols-4 \{\s*grid-template-columns: repeat\(4")
+        self.assertIn("flex-direction: row;", css[css.index("Раунд 15"):])
+
+
+# ---------------------------------------------------------------------------
+# Раунд 22: семестры (основа для фильтров журнала)
+# ---------------------------------------------------------------------------
+
+from .semesters import (
+    course_of_semester,
+    semester_at,
+    semester_ranges,
+    semesters_of_course,
+)
+
+
+def semester_data(number, start, end, prefix="semester"):
+    return {
+        f"{prefix}-semester_number": number,
+        f"{prefix}-start_date": start,
+        f"{prefix}-end_date": end,
+    }
+
+
+class SemesterKuznyaTests(BaseTestCase):
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def add(self, number, start, end):
+        return self.client.post(
+            reverse("workshop"),
+            {"action": "add_semester", **semester_data(number, start, end)},
+        )
+
+    def form_errors(self, response):
+        return response.context["cards"]["semester"]["form"].errors
+
+    def test_card_is_on_the_page(self):
+        response = self.client.get(reverse("workshop"))
+
+        self.assertContains(response, "<h2>Семестры</h2>", html=True)
+        self.assertContains(response, 'name="semester-start_date"')
+        self.assertContains(response, 'type="date"')
+
+    def test_add_semester(self):
+        response = self.add(1, "2026-09-01", "2026-12-31")
+
+        self.assertEqual(response.status_code, 302)
+        item = Semester.objects.get()
+
+        self.assertEqual(item.semester_number, 1)
+        self.assertEqual(item.start_date, date(2026, 9, 1))
+        self.assertEqual(item.course, 1)
+
+    def test_number_must_be_from_one_to_eight(self):
+        for bad in (0, 9, "x"):
+            with self.subTest(bad=bad):
+                response = self.add(bad, "2026-09-01", "2026-12-31")
+
+                self.assertIn("semester_number", self.form_errors(response))
+
+        self.assertFalse(Semester.objects.exists())
+
+    def test_one_interval_per_semester(self):
+        self.add(1, "2026-09-01", "2026-12-31")
+        response = self.add(1, "2027-01-10", "2027-05-31")
+
+        self.assertIn("уже задан", str(self.form_errors(response)))
+        self.assertEqual(Semester.objects.count(), 1)
+
+    def test_end_before_start_is_an_error(self):
+        response = self.add(1, "2026-12-31", "2026-09-01")
+
+        self.assertIn("раньше начала", str(self.form_errors(response)))
+        self.assertFalse(Semester.objects.exists())
+
+    def test_one_day_semester_is_allowed(self):
+        self.add(1, "2026-09-01", "2026-09-01")
+
+        self.assertEqual(Semester.objects.count(), 1)
+
+    def test_overlap_is_an_error_and_names_the_other_semester(self):
+        self.add(1, "2026-09-01", "2026-12-31")
+        response = self.add(2, "2026-12-20", "2027-05-31")
+
+        self.assertIn("пересекаются с 1 семестром", str(self.form_errors(response)))
+        self.assertEqual(Semester.objects.count(), 1)
+
+    def test_shared_boundary_day_counts_as_overlap(self):
+        self.add(1, "2026-09-01", "2026-12-31")
+        self.add(2, "2026-12-31", "2027-05-31")
+
+        self.assertEqual(Semester.objects.count(), 1)
+
+    def test_adjacent_semesters_are_fine(self):
+        self.add(1, "2026-09-01", "2026-12-31")
+        self.add(2, "2027-01-01", "2027-05-31")
+
+        self.assertEqual(Semester.objects.count(), 2)
+
+    def test_edit_can_move_dates_but_not_into_another_semester(self):
+        self.add(1, "2026-09-01", "2026-12-31")
+        self.add(2, "2027-01-10", "2027-05-31")
+        first = Semester.objects.get(semester_number=1)
+
+        def update(start, end):
+            return self.client.post(reverse("workshop"), {
+                "action": "update_item", "edit": "semester", "item": first.pk,
+                **semester_data(1, start, end),
+            })
+
+        # Свой же прежний интервал пересечением не считается
+        update("2026-09-02", "2026-12-30")
+        first.refresh_from_db()
+        self.assertEqual(first.start_date, date(2026, 9, 2))
+
+        # Заезд на второй семестр — ошибка, дат не меняет
+        response = update("2026-09-02", "2027-02-01")
+        first.refresh_from_db()
+
+        self.assertEqual(first.end_date, date(2026, 12, 30))
+        self.assertContains(response, "Проверьте заполненные поля")
+
+    def test_picker_lists_semesters_in_order(self):
+        self.add(2, "2027-01-10", "2027-05-31")
+        self.add(1, "2026-09-01", "2026-12-31")
+
+        response = self.client.get(reverse("workshop"), {"edit": "semester"})
+        labels = [e["label"] for e in response.context["cards"]["semester"]["items"]]
+
+        self.assertEqual(labels, [
+            "1 семестр · 01.09.2026 — 31.12.2026",
+            "2 семестр · 10.01.2027 — 31.05.2027",
+        ])
+
+    def test_delete_with_confirmation(self):
+        self.add(1, "2026-09-01", "2026-12-31")
+        item = Semester.objects.get()
+        url = reverse("workshop")
+        fields = {"edit": "semester", "item": item.pk}
+
+        response = self.client.post(url, {"action": "delete_item", **fields})
+        self.assertContains(response, "Удалить «1 семестр")
+        self.assertTrue(Semester.objects.exists())
+
+        self.client.post(url, {"action": "delete_confirmed", **fields})
+        self.assertFalse(Semester.objects.exists())
+
+    def test_only_staff_can_add(self):
+        self.client.force_login(self.user)
+        response = self.add(1, "2026-09-01", "2026-12-31")
+
+        self.assertFalse(Semester.objects.exists())
+        self.assertNotEqual(response.status_code, 200)
+
+
+class SemesterHelpersTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        Semester.objects.create(
+            semester_number=1, start_date=date(2026, 9, 1),
+            end_date=date(2026, 12, 31))
+        Semester.objects.create(
+            semester_number=2, start_date=date(2027, 1, 11),
+            end_date=date(2027, 5, 31))
+
+    def test_course_numbers(self):
+        self.assertEqual(semesters_of_course(1), (1, 2))
+        self.assertEqual(semesters_of_course(4), (7, 8))
+        self.assertEqual(
+            [course_of_semester(n) for n in range(1, 9)],
+            [1, 1, 2, 2, 3, 3, 4, 4],
+        )
+
+    def test_semester_at_date(self):
+        self.assertEqual(semester_at(date(2026, 9, 1)).semester_number, 1)
+        self.assertEqual(semester_at(date(2026, 12, 31)).semester_number, 1)
+        self.assertEqual(semester_at(date(2027, 3, 3)).semester_number, 2)
+
+    def test_holidays_have_no_semester(self):
+        self.assertIsNone(semester_at(date(2027, 1, 5)))
+        self.assertIsNone(semester_at(date(2026, 8, 31)))
+
+    def test_ranges_for_chosen_semesters(self):
+        self.assertEqual(
+            semester_ranges([2]), [(date(2027, 1, 11), date(2027, 5, 31))]
+        )
+        self.assertEqual(len(semester_ranges()), 2)
+        self.assertEqual(semester_ranges([7, 8]), [])
+        self.assertEqual(semester_ranges([99]), [])
+
+    def test_database_constraint_rejects_reversed_dates(self):
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Semester.objects.create(
+                semester_number=3, start_date=date(2027, 6, 2),
+                end_date=date(2027, 6, 1))
+
+
+class SemesterScriptTests(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        base = Path(settings.BASE_DIR) / "database"
+        cls.script = (base / "add_semesters.py").read_text(encoding="utf-8")
+        cls.create = (base / "create_db.py").read_text(encoding="utf-8")
+
+    def test_table_and_columns_match_model(self):
+        self.assertEqual(Semester._meta.db_table, "Semester")
+
+        for script in (self.script, self.create):
+            self.assertIn('CREATE TABLE IF NOT EXISTS "Semester"', script)
+            self.assertIn("semester_dates_order", script)
+
+            for field in Semester._meta.concrete_fields:
+                self.assertIn(field.column, script)
+
+    def test_script_is_safe_to_rerun(self):
+        self.assertNotIn("DROP", self.script)
+        self.assertNotIn("DELETE", self.script)

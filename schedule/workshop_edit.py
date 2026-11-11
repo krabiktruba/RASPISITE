@@ -4,42 +4,45 @@
 записи для выбора, находит нужную, проверяет, можно ли её удалить, и
 готовит предупреждение о том, что удалится вместе с ней.
 
-Четыре раздела Кузни: теги, типы тегов, группы, пары (преподавателей
-добавляют на странице «Пользователи»).
+Пять разделов Кузни: теги групп, теги преподавателей, группы, пары и семестры
+(преподавателей добавляют на странице «Пользователи»).
 """
 
 from .dates import WEEKDAY_NAMES
 from .models import (
     Day,
     Group,
+    GroupTag,
     Pair,
+    PairGroup,
     Profile,
     ScheduleChange,
-    Tag,
-    TagType,
+    Semester,
     Teacher,
+    TeacherTag,
 )
 
-EDIT_KEYS = ("tag_type", "tag", "group", "pair")
+EDIT_KEYS = ("group_tag", "teacher_tag", "group", "pair", "semester")
+
+# Разделы-теги: у каждого своя таблица
+TAG_MODELS = {"group_tag": GroupTag, "teacher_tag": TeacherTag}
 
 # ---------------------------------------------------------------------------
 # Список записей и поиск
 # ---------------------------------------------------------------------------
 
 def _queryset(key):
-    if key == "tag_type":
-        return TagType.objects.order_by("tag_type_name", "tag_type_id")
-
-    if key == "tag":
-        return Tag.objects.select_related("tag_type").order_by(
-            "tag_type__tag_type_name", "tag_name", "tag_id"
-        )
+    if key in TAG_MODELS:
+        return TAG_MODELS[key].objects.order_by("tag_name", "tag_id")
 
     if key == "group":
         return Group.objects.order_by("group_name", "group_id")
 
-    return Pair.objects.select_related("group", "teacher").order_by(
-        "group__group_name", "pair_name", "pair_id"
+    if key == "semester":
+        return Semester.objects.order_by("semester_number")
+
+    return Pair.objects.select_related("teacher").order_by(
+        "pair_name", "teacher__teacher_name", "pair_id"
     )
 
 
@@ -50,19 +53,19 @@ def edit_items(key):
 
 def item_label(key, obj):
     """Подпись записи в списке выбора."""
-    if key == "tag_type":
-        return obj.tag_type_name
-
-    if key == "tag":
-        return f"{obj.tag_type.tag_type_name}: {obj.tag_name}"
+    if key in TAG_MODELS:
+        return obj.tag_name
 
     if key == "group":
         return obj.group_name
 
-    return (
-        f"{obj.group.group_name} · {obj.pair_name} · "
-        f"{obj.teacher.teacher_name}"
-    )
+    if key == "semester":
+        return (
+            f"{obj.semester_number} семестр · "
+            f"{obj.start_date:%d.%m.%Y} — {obj.end_date:%d.%m.%Y}"
+        )
+
+    return f"{obj.pair_name} · {obj.teacher.teacher_name}"
 
 
 def find_item(key, raw_id):
@@ -84,17 +87,15 @@ def find_item(key, raw_id):
 
 def delete_blocker(key, obj):
     """Текст причины, по которой запись нельзя удалить, или пустая строка."""
-    if key == "tag_type":
-        count = Tag.objects.filter(tag_type=obj).count()
-
-        if count:
-            return (
-                f"Нельзя удалить тип «{obj.tag_type_name}»: у него есть "
-                f"теги ({count}). Сначала удалите их или переведите "
-                f"на другой тип."
-            )
-
+    # Сейчас ничто не мешает удалению: остальное удаляется с предупреждением
     return ""
+
+
+def _marks_of(pair):
+    """Сколько записей дневника связано с парой (приложение diary)."""
+    from django.apps import apps
+
+    return apps.get_model("diary", "Mark").objects.filter(pair=pair).count()
 
 
 def _parts(pairs):
@@ -104,25 +105,34 @@ def _parts(pairs):
 
 def delete_warning(key, obj):
     """Что произойдёт при удалении (для подтверждения). Может быть пустым."""
-    if key == "tag":
-        parts = _parts([
-            ("преподаватели", Teacher.objects.filter(teacher_tag=obj).count()),
-            ("группы", Group.objects.filter(group_tag=obj).count()),
-        ])
+    if key == "group_tag":
+        count = Group.objects.filter(group_tag=obj).count()
 
-        if parts:
-            return "Тег будет снят у: " + ", ".join(parts) + "."
+        if count:
+            return f"Тег будет снят у групп: {count}."
+
+    if key == "teacher_tag":
+        count = Teacher.objects.filter(teacher_tag=obj).count()
+
+        if count:
+            return f"Тег будет снят у преподавателей: {count}."
+
+    if key == "semester":
+        return "Оценки и расписание не удаляются: пропадёт только период."
 
     if key == "group":
         removed = _parts([
-            ("пары", Pair.objects.filter(group=obj).count()),
             ("занятия в расписании", Day.objects.filter(group=obj).count()),
+            ("разовые правки", ScheduleChange.objects.filter(
+                group=obj).count()),
+            ("привязки пар", PairGroup.objects.filter(group=obj).count()),
         ])
         students = Profile.objects.filter(group=obj).count()
         text = []
 
         if removed:
             text.append("Вместе с группой удалятся: " + ", ".join(removed) + ".")
+            text.append("Сами пары останутся.")
 
         if students:
             text.append(f"Студенты ({students}) останутся без группы.")
@@ -134,6 +144,7 @@ def delete_warning(key, obj):
             ("занятия в расписании", Day.objects.filter(pair=obj).count()),
             ("разовые правки", ScheduleChange.objects.filter(
                 pair=obj).count()),
+            ("записи дневника", _marks_of(obj)),
         ])
 
         if parts:
@@ -147,10 +158,11 @@ def delete_warning(key, obj):
 # ---------------------------------------------------------------------------
 
 def pair_teacher_conflict(pair, teacher):
-    """Текст ошибки, если новый преподаватель окажется в двух местах сразу.
+    """Текст предупреждения, если новый преподаватель окажется в двух местах.
 
     Проверяется постоянное расписание: каждое занятие этой пары не должно
-    совпасть по дню и номеру с другой парой того же преподавателя.
+    совпасть по дню и номеру с другой парой того же преподавателя. Это только
+    предупреждение: изменение всё равно сохраняется.
     """
     for slot in Day.objects.filter(pair=pair):
         other = Day.objects.filter(
@@ -163,9 +175,9 @@ def pair_teacher_conflict(pair, teacher):
             weekday = WEEKDAY_NAMES.get(slot.weekday_id, slot.weekday_id)
 
             return (
-                f"{teacher.teacher_name} уже ведёт занятие у группы "
+                f"{teacher.teacher_name} в это же время ведёт занятие у группы "
                 f"{other.group.group_name} ({weekday}, пара "
-                f"{slot.pair_number}). Сначала измените расписание."
+                f"{slot.pair_number}). Проверьте расписание."
             )
 
     return ""

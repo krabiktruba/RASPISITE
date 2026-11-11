@@ -1,4 +1,5 @@
 {% extends "main.html" %}
+{% load people %}
 
 {% block content %}
 <div class="daily-page">
@@ -56,42 +57,174 @@
         <section class="users-card users-table-card">
             <h2>Пользователи</h2>
 
+            <form class="user-filters" method="get" action="{% url 'users' %}" role="search">
+                <div class="user-filter-grid">
+                    <div class="user-filter user-filter-search">
+                        <label for="user-q">Поиск</label>
+                        <span class="search-field">
+                            <input id="user-q" type="search" name="q" value="{{ filters.q }}"
+                                   maxlength="100" autocomplete="off"
+                                   placeholder="ФИО или почта…">
+                            <button class="search-go" type="submit"
+                                    aria-label="Найти" title="Найти">
+                                <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false">
+                                    <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/>
+                                    <path d="M12.8 12.8 17.5 17.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                            </button>
+                        </span>
+                    </div>
+
+                    <div class="user-filter">
+                        <label for="user-role">Роль</label>
+                        <select id="user-role" name="role">
+                            <option value="">Все роли</option>
+                            {% for value, label in user_role_filters %}
+                                <option value="{{ value }}"{% if filters.role == value %} selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="user-filter">
+                        <label for="user-group">Группа</label>
+                        <select id="user-group" name="group">
+                            <option value="">Все группы</option>
+                            {% for group in groups %}
+                                <option value="{{ group.pk }}"{% if filters.group == group.pk %} selected{% endif %}>{{ group.group_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="user-filter">
+                        <label for="user-tag">Тег</label>
+                        <select id="user-tag" name="tag">
+                            <option value="">Все теги</option>
+                            {% for title, options in tag_filter_groups %}
+                                {% if options %}
+                                    <optgroup label="{{ title }}">
+                                        {% for value, name in options %}
+                                            <option value="{{ value }}"{% if filters.tag == value %} selected{% endif %}>{{ name }}</option>
+                                        {% endfor %}
+                                    </optgroup>
+                                {% endif %}
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="user-filter">
+                        <label for="user-sort">Порядок</label>
+                        <select id="user-sort" name="sort">
+                            <option value="new"{% if filters.sort == "new" %} selected{% endif %}>Сначала новые</option>
+                            <option value="name"{% if filters.sort == "name" %} selected{% endif %}>По алфавиту</option>
+                        </select>
+                    </div>
+
+                    <div class="user-filter">
+                        <label class="user-filter-pill">
+                            <input type="checkbox" name="nogroup" value="1"{% if filters.nogroup %} checked{% endif %}>
+                            <span>Студенты без группы</span>
+                        </label>
+                    </div>
+
+                    <div class="user-filter">
+                        <label class="user-filter-pill">
+                            <input type="checkbox" name="curators" value="1"{% if filters.curators %} checked{% endif %}>
+                            <span>Кураторы</span>
+                        </label>
+                    </div>
+
+                    {% if has_filters %}
+                        <div class="user-filter">
+                            <a class="user-filter-reset" href="{% url 'users' %}{% if filters.sort != 'new' %}?sort={{ filters.sort }}{% endif %}">Сбросить</a>
+                        </div>
+                    {% endif %}
+                </div>
+            </form>
+
+            {% if has_filters %}
+                <p class="users-hint user-filter-info">Найдено: {{ found_count }}.</p>
+            {% endif %}
+
             <div class="workshop-table-wrap">
                 <table class="users-table">
                     <thead>
                         <tr>
                             <th scope="col">ФИО</th>
                             <th scope="col">Почта (логин)</th>
-                            <th scope="col">Роль</th>
-                            <th scope="col">Группа / тег</th>
-                            <th scope="col">Изменить роль</th>
+                            <th scope="col">Группа / курирует</th>
+                            <th scope="col">Последний вход</th>
+                            <th scope="col">Роль, группа / тег</th>
                         </tr>
                     </thead>
 
                     <tbody>
                         {% for row in rows %}
-                            <tr>
+                            <tr{% if row.is_new %} class="is-new"{% endif %}>
                                 <th scope="row">
-                                    {% if row.full_name %}{{ row.full_name }}{% else %}<span class="users-hint">&nbsp;</span>{% endif %}
+                                    {% if row.is_student %}
+                                        <a href="{% url 'student_card' user_id=row.user.pk %}">{% if row.full_name %}{{ row.full_name|person }}{% else %}{{ row.user.get_username }}{% endif %}</a>
+                                    {% elif row.is_teacher and row.teacher_id %}
+                                        <a href="{% url 'teacher_card' teacher_id=row.teacher_id %}">{% if row.full_name %}{{ row.full_name|person }}{% else %}{{ row.user.get_username }}{% endif %}</a>
+                                    {% elif row.full_name %}
+                                        {{ row.full_name|person }}
+                                    {% else %}
+                                        <span class="users-hint">&nbsp;</span>
+                                    {% endif %}
                                 </th>
 
-                                <td>{{ row.user.get_username }}</td>
+                                <td class="user-mail">{{ row.user.get_username }}</td>
 
-                                <td>
-                                    <span class="role-badge role-{{ row.role }}">
-                                        {{ row.role_label }}
-                                    </span>
+                                <td class="user-info">
+                                    {% if row.is_student and row.group %}
+                                        <div class="user-info-line"><a href="{% url 'group_card' group_id=row.group.pk %}">{{ row.group.group_name }}</a>{% include "group_meta.html" with group=row.group %}</div>
+                                        <div class="user-info-sub">Куратор:
+                                            {% if row.curator %}<a href="{% url 'teacher_card' teacher_id=row.curator.pk %}">{{ row.curator.teacher_name|person }}</a>{% else %}<span class="users-hint">не назначен</span>{% endif %}
+                                        </div>
+                                    {% elif row.is_student %}
+                                        <span class="users-hint">без группы</span>
+                                    {% elif row.is_teacher and row.curated %}
+                                        <div class="user-info-sub">Курирует:</div>
+                                        <div class="user-info-line user-info-groups">
+                                            {% for group in row.curated %}<span class="user-info-group"><a href="{% url 'group_card' group_id=group.pk %}">{{ group.group_name }}</a>{% include "group_meta.html" with group=group %}</span>{% endfor %}
+                                        </div>
+                                    {% elif row.is_teacher %}
+                                        <span class="users-hint">никого не курирует</span>
+                                    {% else %}
+                                        <span class="users-hint">—</span>
+                                    {% endif %}
+                                </td>
+
+                                <td class="user-login">
+                                    {% if row.last_login %}{{ row.last_login|date:"d.m.Y H:i" }}{% else %}<span class="users-hint">не входил</span>{% endif %}
                                 </td>
 
                                 <td>
-                                    {% if row.is_student %}
-                                        <form class="role-form" method="post"
-                                              action="{% url 'users' %}">
-                                            {% csrf_token %}
-                                            <input type="hidden" name="action" value="set_group">
-                                            <input type="hidden" name="user_id" value="{{ row.user.pk }}">
-                                            <input type="hidden" name="page" value="{{ page_obj.number }}">
+                                    <form class="role-form user-row-form" method="post"
+                                          action="{% url 'users' %}">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="action" value="save_user">
+                                        <input type="hidden" name="user_id" value="{{ row.user.pk }}">
+                                        <input type="hidden" name="page" value="{{ page_obj.number }}">
+                                        <input type="hidden" name="qs" value="{{ filter_query }}">
 
+                                        {% if row.locked %}
+                                            <span class="role-badge role-{{ row.role }}">{{ row.role_label }}</span>
+                                            <span class="users-hint">
+                                                {% if row.user.is_superuser %}суперпользователь{% else %}это вы{% endif %}
+                                            </span>
+                                        {% else %}
+                                            <select name="role"
+                                                    aria-label="Роль {{ row.user.get_username }}">
+                                                {% for value, label in role_choices %}
+                                                    <option value="{{ value }}"
+                                                        {% if value == row.role %}selected{% endif %}>
+                                                        {{ label }}
+                                                    </option>
+                                                {% endfor %}
+                                            </select>
+                                        {% endif %}
+
+                                        {% if row.is_student %}
                                             <select name="group"
                                                     aria-label="Группа {{ row.user.get_username }}">
                                                 <option value="">— не назначена —</option>
@@ -102,72 +235,27 @@
                                                     </option>
                                                 {% endfor %}
                                             </select>
-
-                                            <button type="submit">Сохранить</button>
-                                        </form>
-                                    {% elif row.is_teacher %}
-                                        <form class="role-form" method="post"
-                                              action="{% url 'users' %}">
-                                            {% csrf_token %}
-                                            <input type="hidden" name="action" value="set_teacher_tag">
-                                            <input type="hidden" name="user_id" value="{{ row.user.pk }}">
-                                            <input type="hidden" name="page" value="{{ page_obj.number }}">
-
+                                        {% elif row.is_teacher %}
                                             <select name="tag"
                                                     aria-label="Тег {{ row.user.get_username }}">
                                                 <option value="">— без тега —</option>
-                                                {% for tag in tags %}
+                                                {% for tag in teacher_tags %}
                                                     <option value="{{ tag.pk }}"
                                                         {% if tag.pk == row.teacher_tag_id %}selected{% endif %}>
                                                         {{ tag.full_name }}
                                                     </option>
                                                 {% endfor %}
                                             </select>
+                                        {% endif %}
 
-                                            <button type="submit">Сохранить</button>
-                                        </form>
-                                    {% else %}
-                                        <span class="users-hint">&nbsp;</span>
-                                    {% endif %}
+                                        <button type="submit">Сохранить</button>
+                                    </form>
                                 </td>
-
-                                <td>
-                                    {% if row.locked %}
-                                        <span class="users-hint">
-                                            {% if row.user.is_superuser %}суперпользователь{% else %}это вы{% endif %}
-                                        </span>
-                                    {% else %}
-                                        <form class="role-form" method="post"
-                                              action="{% url 'users' %}">
-                                            {% csrf_token %}
-                                            <input type="hidden" name="action" value="set_role">
-                                            <input type="hidden" name="user_id" value="{{ row.user.pk }}">
-                                            <input type="hidden" name="page" value="{{ page_obj.number }}">
-
-                                            <select name="role"
-                                                    aria-label="Роль {{ row.user.get_username }}">
-                                                {% for value, label in role_choices %}
-                                                    <option value="{{ value }}"
-                                                        {% if value == row.role %}selected{% endif %}>
-                                                        {{ label }}
-                                                    </option>
-                                                {% endfor %}
-                                            </select>
-
-                                            <select name="teacher"
-                                                    aria-label="Преподаватель для {{ row.user.get_username }}">
-                                                <option value="">— по ФИО пользователя —</option>
-                                                {% for teacher in row.teacher_options %}
-                                                    <option value="{{ teacher.pk }}"
-                                                        {% if teacher.pk == row.teacher_id %}selected{% endif %}>
-                                                        {{ teacher.teacher_name }}
-                                                    </option>
-                                                {% endfor %}
-                                            </select>
-
-                                            <button type="submit">Сохранить</button>
-                                        </form>
-                                    {% endif %}
+                            </tr>
+                        {% empty %}
+                            <tr>
+                                <td colspan="5">
+                                    <span class="users-hint">Никого не найдено.</span>
                                 </td>
                             </tr>
                         {% endfor %}
@@ -178,7 +266,7 @@
             {% if page_obj.has_other_pages %}
                 <nav class="pagination" aria-label="Страницы списка пользователей">
                     {% if page_obj.has_previous %}
-                        <a href="?page={{ page_obj.previous_page_number }}">← Назад</a>
+                        <a href="?{% if filter_query %}{{ filter_query }}&amp;{% endif %}page={{ page_obj.previous_page_number }}">← Назад</a>
                     {% endif %}
 
                     {% for number in page_numbers %}
@@ -187,12 +275,12 @@
                         {% elif number == page_obj.number %}
                             <span class="pagination-current" aria-current="page">{{ number }}</span>
                         {% else %}
-                            <a href="?page={{ number }}">{{ number }}</a>
+                            <a href="?{% if filter_query %}{{ filter_query }}&amp;{% endif %}page={{ number }}">{{ number }}</a>
                         {% endif %}
                     {% endfor %}
 
                     {% if page_obj.has_next %}
-                        <a href="?page={{ page_obj.next_page_number }}">Вперёд →</a>
+                        <a href="?{% if filter_query %}{{ filter_query }}&amp;{% endif %}page={{ page_obj.next_page_number }}">Вперёд →</a>
                     {% endif %}
                 </nav>
             {% endif %}

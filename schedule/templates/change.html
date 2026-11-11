@@ -1,4 +1,5 @@
 {% extends "main.html" %}
+{% load people %}
 
 {% block content %}
 <div class="daily-page">
@@ -21,7 +22,7 @@
 
         <p class="change-current">
             <strong>{{ pair.pair_name }}</strong>
-            <span>{{ pair.teacher.teacher_name }}</span>
+            <span>{{ pair.teacher.teacher_name|person }}</span>
         </p>
 
         <p class="users-hint">

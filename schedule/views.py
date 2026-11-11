@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import wraps
 from urllib.parse import urlencode
 
@@ -8,14 +8,16 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
 from django.db import DatabaseError, transaction
-from django.db.models import ProtectedError, Q
-from django.http import Http404, HttpResponse
+from django.db.models import Prefetch, ProtectedError, Q
+from django.http import Http404, HttpResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 
 from .access import (
+    can_view_group_students,
+    can_view_student,
     full_name,
     own_group_id,
     own_teacher_id,
@@ -41,7 +43,8 @@ from .changes import (
 )
 from .csv_io import (
     KINDS,
-    MAX_FILE_BYTES,
+    build_zip,
+    max_bytes,
     build_csv,
     import_csv,
     kind_choices,
@@ -68,15 +71,18 @@ from .dates import (
     short_label,
     week_days,
 )
+
 from .tags import build_tag_css
 from .forms import (
     GroupForm,
+    GroupTagForm,
     PairForm,
     NewUserForm,
-    TagForm,
-    TagTypeForm,
+    SemesterForm,
+    TeacherTagForm,
 )
 from .models import (
+    ROLE_ADMIN,
     ROLE_CHOICES,
     ROLE_STUDENT,
     ROLE_TEACHER,
@@ -85,19 +91,22 @@ from .models import (
     Course,
     Day,
     Group,
+    GroupTag,
     Pair,
+    PairGroup,
     Profile,
     ScheduleChange,
     Shift,
     StudyHours,
-    Tag,
     Teacher,
+    TeacherTag,
     Weekday,
 )
 
 
 # Сколько групп показывать на одной странице /groups/
 GROUPS_PER_PAGE = 6
+MAX_GROUP_SEARCH = 100
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +133,11 @@ def staff_required(view):
 
 def tag_styles(request):
     """Правила цветов для меток тегов: по классу на каждый цвет в базе."""
-    colors = Tag.objects.values_list("tag_color", flat=True).distinct()
+    colors = list(
+        GroupTag.objects.values_list("tag_color", flat=True).distinct()
+    ) + list(
+        TeacherTag.objects.values_list("tag_color", flat=True).distinct()
+    )
 
     response = HttpResponse(
         build_tag_css(colors),
@@ -290,6 +303,163 @@ def _calendar_target(user):
 
 
 @login_required
+def student_card(request, user_id):
+    """Профиль студента: ФИО, логин, группа, куратор и тег группы.
+
+    Видят администратор, сам студент и куратор его группы; остальным 403.
+    Если такого пользователя нет или он не студент — 404.
+    """
+    student = get_object_or_404(
+        get_user_model().objects.select_related("profile"), pk=user_id
+    )
+
+    if user_role(student) != ROLE_STUDENT:
+        raise Http404("Это не студент.")
+
+    if not can_view_student(request.user, student):
+        raise PermissionDenied
+
+    group = None
+    group_id = own_group_id(student)
+
+    if group_id:
+        group = Group.objects.select_related(
+            "group_tag", "group_curator"
+        ).filter(pk=group_id).first()
+
+    context = {
+        "student": student,
+        "student_name": full_name(student) or student.get_username(),
+        "group": group,
+        "curator": group.group_curator if group else None,
+        "from_users": request.user.is_staff,
+        "edit_url": _user_row_url(student) if request.user.is_staff else None,
+    }
+
+    return render(request, "student_card.html", context)
+
+
+def _user_row_url(account):
+    """Список пользователей, отфильтрованный по логину, с выделенной строкой."""
+    return reverse("users") + "?" + urlencode(
+        {"q": account.get_username(), "new": account.pk}
+    )
+
+
+def _name_sort_key(profile):
+    user = profile.user
+
+    return (
+        user.last_name.lower(), user.first_name.lower(),
+        profile.patronymic.lower(), user.username.lower(),
+    )
+
+
+@login_required
+def teacher_card(request, teacher_id):
+    """Профиль преподавателя: тег, учётная запись, группы и пары.
+
+    Открыть может любой вошедший (расписание преподавателя и так общее),
+    но логин (почту) видят только администратор и сам преподаватель.
+    Старые записи без учётной записи тоже открываются: это история.
+    """
+    teacher = get_object_or_404(
+        Teacher.objects.select_related("teacher_tag"),
+        pk=teacher_id,
+    )
+    profile = Profile.objects.filter(
+        teacher=teacher, role=ROLE_TEACHER
+    ).select_related("user").first()
+    account = profile.user if profile else None
+    is_self = own_teacher_id(request.user) == teacher.pk
+    show_login = account is not None and (request.user.is_staff or is_self)
+
+    curated = list(
+        Group.objects.filter(group_curator=teacher)
+        .select_related("group_tag")
+        .order_by("group_name", "group_id")
+    )
+    pairs = list(
+        Pair.objects.filter(teacher=teacher)
+        .prefetch_related(Prefetch(
+            "groups", queryset=Group.objects.order_by("group_name", "group_id")
+        ))
+        .order_by("pair_name", "pair_id")
+    )
+
+    context = {
+        "teacher": teacher,
+        "account": account,
+        "show_login": show_login,
+        "has_account": account is not None,
+        "curated_groups": curated,
+        "pairs": pairs,
+        "from_users": request.user.is_staff,
+        # «Редактировать»: строка преподавателя в списке пользователей
+        "edit_url": (
+            _user_row_url(account)
+            if request.user.is_staff and account is not None
+            else None
+        ),
+    }
+
+    return render(request, "teacher_card.html", context)
+
+
+@login_required
+def group_card(request, group_id):
+    """Профиль группы: куратор, тег, студенты, пары и преподаватели.
+
+    Открыть может любой вошедший. Список студентов видят администратор и
+    куратор группы, остальным показывается только их число.
+    """
+    group = get_object_or_404(
+        Group.objects.select_related(
+            "group_tag", "group_curator",
+            "group_curator__teacher_tag",
+            "group_course", "shift",
+        ),
+        pk=group_id,
+    )
+
+    students_qs = Profile.objects.filter(
+        group=group, role=ROLE_STUDENT, user__is_staff=False
+    ).select_related("user")
+    show_students = can_view_group_students(request.user, group)
+    students = []
+
+    if show_students:
+        for profile in sorted(students_qs, key=_name_sort_key):
+            students.append({
+                "user": profile.user,
+                "name": full_name(profile.user, profile)
+                or profile.user.get_username(),
+            })
+
+        student_count = len(students)
+    else:
+        student_count = students_qs.count()
+
+    pairs = list(
+        Pair.objects.filter(groups=group)
+        .select_related("teacher", "teacher__teacher_tag")
+        .order_by("pair_name", "pair_id")
+    )
+
+    context = {
+        "group": group,
+        "curator": group.group_curator,
+        "show_students": show_students,
+        "students": students,
+        "student_count": student_count,
+        "pairs": pairs,
+        "from_users": request.user.is_staff,
+    }
+
+    return render(request, "group_card.html", context)
+
+
+@login_required
 def calendar_view(request):
     today = timezone.localdate()
 
@@ -374,6 +544,77 @@ def calendar_view(request):
     return render(request, "calendar.html", context)
 
 
+@login_required
+def calendar_year(request):
+    """Годовой календарь: 12 маленьких месяцев; число ведёт в расписание дня.
+
+    Страница только читает данные: праздники берутся из таблицы Calendar,
+    но сама таблица здесь не пополняется (это делает месячный календарь).
+    """
+    today = timezone.localdate()
+    year = _int_param(request.GET.get("year"))
+
+    if year is None or not MIN_YEAR <= year <= MAX_YEAR:
+        year = today.year
+
+    holidays = _holidays(date(year, 1, 1), date(year, 12, 31))
+    target_url, target_params = _calendar_target(request.user)
+    months = []
+
+    for month in range(1, 13):
+        weeks = []
+
+        for week in month_weeks(year, month):
+            cells = []
+
+            for current in week:
+                if current.month != month:
+                    cells.append(None)
+                    continue
+
+                cells.append({
+                    "number": current.day,
+                    "url": (
+                        f"{target_url}?"
+                        + urlencode({
+                            **target_params,
+                            "date": current.isoformat(),
+                        })
+                    ),
+                    "is_today": current == today,
+                    "is_sunday": current.isoweekday() == 7,
+                    "is_holiday": current in holidays,
+                    "holiday_name": holidays.get(current, ""),
+                })
+
+            weeks.append(cells)
+
+        months.append({
+            "number": month,
+            "name": MONTH_NAMES[month],
+            "weeks": weeks,
+            "is_current": (year, month) == (today.year, today.month),
+        })
+
+    context = {
+        "year": year,
+        "months": months,
+        "weekday_heads": [
+            {
+                "short": WEEKDAY_SHORT[number],
+                "name": WEEKDAY_NAMES[number],
+            }
+            for number in range(1, 8)
+        ],
+        "prev_year": year - 1 if year - 1 >= MIN_YEAR else None,
+        "next_year": year + 1 if year + 1 <= MAX_YEAR else None,
+        "is_current_year": year == today.year,
+        "month_view_month": today.month if year == today.year else 1,
+    }
+
+    return render(request, "calendar_year.html", context)
+
+
 # ---------------------------------------------------------------------------
 # Расписание группы (неделя)
 # ---------------------------------------------------------------------------
@@ -443,6 +684,22 @@ def _open_change_form(params, schedule_days):
     }
 
 
+def _group_schedule_stats(group):
+    """Небольшая сводка для администратора под расписанием группы."""
+    slots = list(Day.objects.filter(group=group).select_related("pair"))
+    attached_ids = set(
+        PairGroup.objects.filter(group=group).values_list("pair_id", flat=True)
+    )
+    used_ids = {day.pair_id for day in slots}
+
+    return {
+        "attached": len(attached_ids),
+        "lessons": len(slots),
+        "teachers": len({day.pair.teacher_id for day in slots}),
+        "unused": len(attached_ids - used_ids),
+    }
+
+
 @login_required
 def group_schedule(request, group_id):
     group = get_object_or_404(
@@ -450,7 +707,6 @@ def group_schedule(request, group_id):
             "shift",
             "group_course",
             "group_tag",
-            "group_tag__tag_type",
         ),
         pk=group_id
     )
@@ -515,6 +771,9 @@ def group_schedule(request, group_id):
 
     context = {
         "group": group,
+        "group_stats": (
+            _group_schedule_stats(group) if request.user.is_staff else None
+        ),
         "schedule_days": schedule_days,
         "edit_mode": edit_mode,
         "edit_form": (
@@ -558,15 +817,25 @@ def daily_schedule(request):
         item["is_today"] = item["date"] == today
         item["is_off"] = bool(_off_reason(item["date"], holidays))
 
+    # Поиск ?q=: по названию группы или по ФИО куратора (на сервере, потому
+    # что группы разбиты на страницы и на странице видна лишь часть из них)
+    query = " ".join(request.GET.get("q", "").split())[:MAX_GROUP_SEARCH]
+    found = Group.objects.select_related(
+        "shift",
+        "group_course",
+        "group_curator",
+        "group_tag",
+    )
+
+    if query:
+        found = found.filter(
+            Q(group_name__icontains=query)
+            | Q(group_curator__teacher_name__icontains=query)
+        )
+
     # Пагинация: на странице GROUPS_PER_PAGE групп
     paginator = Paginator(
-        Group.objects.select_related(
-            "shift",
-            "group_course",
-            "group_curator",
-            "group_tag",
-            "group_tag__tag_type",
-        ).order_by("group_name", "group_id"),
+        found.order_by("group_name", "group_id"),
         GROUPS_PER_PAGE,
     )
     page_obj = paginator.get_page(request.GET.get("page"))
@@ -641,6 +910,8 @@ def daily_schedule(request):
         "schedule_groups": schedule_groups,
         "page_obj": page_obj,
         "page_numbers": page_numbers,
+        "q": query,
+        "found_count": paginator.count,
     }
 
     return render(
@@ -676,7 +947,7 @@ def teachers_schedule(request):
     # Преподаватели и смены для фильтров
     teachers = list(
         Teacher.objects.select_related(
-            "teacher_tag", "teacher_tag__tag_type"
+            "teacher_tag",
         ).order_by("teacher_name", "teacher_id")
     )
     shifts = list(
@@ -928,15 +1199,24 @@ def group_edit(request, group_id):
         )
     }
 
-    # Пары группы; уже назначенные пары других групп тоже остаются в списке,
-    # чтобы сохранение не стирало их молча
+    # В расписание ставятся только пары, привязанные к группе. Уже стоящая
+    # в расписании пара остаётся в списке, даже если её отвязали, чтобы
+    # сохранение не стирало её молча
     pairs = list(
         Pair.objects.filter(
-            Q(group=group)
+            Q(groups=group)
             | Q(pk__in={day.pair_id for day in existing.values()})
-        ).select_related("teacher").order_by("pair_name", "pair_id")
+        ).select_related("teacher").order_by(
+            "pair_name", "pair_id"
+        ).distinct()
     )
     pair_by_id = {pair.pk: pair for pair in pairs}
+    attached_ids = set(
+        PairGroup.objects.filter(group=group).values_list("pair_id", flat=True)
+    )
+
+    for pair in pairs:
+        pair.attached = pair.pk in attached_ids
 
     hours = {
         hour.pair_number: hour
@@ -948,6 +1228,7 @@ def group_edit(request, group_id):
         for slot, day in existing.items()
     }
     errors = []
+    warnings = []
 
     def slot_name(weekday_id, number):
         weekday_name = names.get(weekday_id, WEEKDAY_NAMES[weekday_id])
@@ -977,7 +1258,8 @@ def group_edit(request, group_id):
                 else:
                     chosen[slot] = pair_id
 
-        # Преподаватель не может вести две пары одновременно
+        # Преподаватель у двух групп в одно время — предупреждение: пара может
+        # быть общей (лекция для нескольких групп), поэтому сохранять можно
         teacher_ids = {
             pair_by_id[pair_id].teacher_id
             for pair_id in chosen.values()
@@ -998,20 +1280,20 @@ def group_edit(request, group_id):
                     other.pair_number,
                     other.pair.teacher_id,
                 )
-                busy[key] = other.group.group_name
+                busy.setdefault(key, []).append(other.group.group_name)
 
         for (weekday_id, number), pair_id in chosen.items():
             if pair_id is None:
                 continue
 
             pair = pair_by_id[pair_id]
-            other_group = busy.get((weekday_id, number, pair.teacher_id))
+            other_groups = busy.get((weekday_id, number, pair.teacher_id))
 
-            if other_group:
-                errors.append(
+            if other_groups:
+                warnings.append(
                     f"{slot_name(weekday_id, number)}: "
-                    f"{pair.teacher.teacher_name} уже ведёт занятие "
-                    f"у группы {other_group}."
+                    f"{pair.teacher.teacher_name} в это же время ведёт "
+                    f"занятие у группы {', '.join(sorted(other_groups))}."
                 )
 
         selected = chosen
@@ -1043,6 +1325,12 @@ def group_edit(request, group_id):
 
             else:
                 messages.success(request, "Расписание группы сохранено.")
+
+                for warning in warnings:
+                    messages.warning(
+                        request, f"Совпадение у преподавателя. {warning}"
+                    )
+
                 return redirect("group_edit", group_id=group.pk)
 
     edit_days = [
@@ -1066,6 +1354,7 @@ def group_edit(request, group_id):
         "group": group,
         "edit_days": edit_days,
         "pair_options": pairs,
+        "attached_count": len(attached_ids),
         "errors": errors,
     }
 
@@ -1099,9 +1388,10 @@ def _calendar_row(day):
 
 
 def _clear_slot_changes(day, record, number, existing):
-    """Снимает все правки слота (дата, пара, номер пары)."""
+    """Снимает все правки слота (дата, группа, пара, номер пары)."""
     ScheduleChange.objects.filter(
         calendar__date=day,
+        group_id=record.group_id,
         pair_id=record.pair_id,
         old_pair_number=number,
     ).delete()
@@ -1116,6 +1406,7 @@ def _save_cancel(day, record, number, existing):
 
         ScheduleChange.objects.create(
             calendar=_calendar_row(day),
+            group_id=record.group_id,
             pair=record.pair,
             old_pair_number=number,
             change_type=CANCEL,
@@ -1171,6 +1462,7 @@ def _save_replace(data, day, record, number, existing, changes):
 
         ScheduleChange.objects.create(
             calendar=_calendar_row(day),
+            group_id=record.group_id,
             pair=record.pair,
             old_pair_number=number,
             new_teacher=teacher,
@@ -1236,6 +1528,7 @@ def _save_move(data, group, day, record, number, existing, changes):
 
         ScheduleChange.objects.create(
             calendar=_calendar_row(day),
+            group_id=record.group_id,
             pair=record.pair,
             old_pair_number=number,
             new_calendar=_calendar_row(new_day),
@@ -1296,7 +1589,7 @@ def group_change(request, group_id):
 
     changes = load_changes(day, day)
     existing = find_change(
-        index_changes(changes), day, record.pair_id, number
+        index_changes(changes), day, group.pk, record.pair_id, number
     )
 
     if kind == "restore":
@@ -1398,10 +1691,238 @@ def _remember_new_user(request, form):
             request.session[NEW_USER_GROUP_SESSION_KEY] = group.pk
 
 
-def _users_url(page=""):
+MAX_USER_SEARCH = 100
+USER_ROLE_FILTERS = (ROLE_STUDENT, ROLE_TEACHER, ROLE_ADMIN)
+
+
+def _users_url(page="", query="", new=None):
+    """Адрес списка: страница, фильтры (готовая строка) и новый пользователь."""
+    params = []
+
+    if query:
+        params.append(query)
+
+    if str(page).isdigit():
+        params.append(f"page={page}")
+
+    if new:
+        params.append(f"new={new}")
+
     url = reverse("users")
 
-    return f"{url}?page={page}" if str(page).isdigit() else url
+    return f"{url}?{'&'.join(params)}" if params else url
+
+
+def _parse_tag_filter(raw, group_tag_ids, teacher_tag_ids):
+    """Тег из адреса: «g5» — тег группы, «t3» — тег преподавателя."""
+    raw = (raw or "").strip()
+    number = _int_param(raw[1:])
+
+    if raw[:1] == "g" and number in group_tag_ids:
+        return f"g{number}"
+
+    if raw[:1] == "t" and number in teacher_tag_ids:
+        return f"t{number}"
+
+    return ""
+
+
+def _parse_user_filters(params, group_ids, group_tag_ids, teacher_tag_ids):
+    """Фильтры списка из адреса; всё неизвестное тихо отбрасывается."""
+    role = params.get("role", "")
+    group = _int_param(params.get("group"))
+
+    return {
+        "q": " ".join(params.get("q", "").split())[:MAX_USER_SEARCH],
+        "role": role if role in USER_ROLE_FILTERS else "",
+        "group": group if group in group_ids else None,
+        "tag": _parse_tag_filter(
+            params.get("tag"), group_tag_ids, teacher_tag_ids
+        ),
+        "nogroup": params.get("nogroup") == "1",
+        "curators": params.get("curators") == "1",
+        "sort": "name" if params.get("sort") == "name" else "new",
+    }
+
+
+def _filters_query(filters):
+    """Строка адреса из фильтров (только заданные), без страницы."""
+    params = []
+
+    for key in ("q", "role", "group", "tag"):
+        if filters[key] not in ("", None):
+            params.append((key, filters[key]))
+
+    for key in ("nogroup", "curators"):
+        if filters[key]:
+            params.append((key, "1"))
+
+    if filters["sort"] != "new":
+        params.append(("sort", filters["sort"]))
+
+    return urlencode(params)
+
+
+def _filter_users(queryset, filters):
+    """Применяет фильтры к списку пользователей одним запросом к базе."""
+    for word in filters["q"].split()[:5]:
+        queryset = queryset.filter(
+            Q(last_name__icontains=word)
+            | Q(first_name__icontains=word)
+            | Q(username__icontains=word)
+            | Q(email__icontains=word)
+            | Q(profile__patronymic__icontains=word)
+        )
+
+    role = filters["role"]
+    student = Q(is_staff=False) & (
+        Q(profile__isnull=True) | Q(profile__role=ROLE_STUDENT)
+    )
+
+    if role == ROLE_ADMIN:
+        queryset = queryset.filter(is_staff=True)
+    elif role == ROLE_TEACHER:
+        queryset = queryset.filter(
+            is_staff=False, profile__role=ROLE_TEACHER
+        )
+    elif role == ROLE_STUDENT:
+        queryset = queryset.filter(student)
+
+    if filters["group"]:
+        queryset = queryset.filter(
+            is_staff=False,
+            profile__role=ROLE_STUDENT,
+            profile__group_id=filters["group"],
+        )
+
+    if filters["nogroup"]:
+        queryset = queryset.filter(student).filter(
+            Q(profile__isnull=True) | Q(profile__group__isnull=True)
+        )
+
+    if filters["curators"]:
+        queryset = queryset.filter(
+            is_staff=False,
+            profile__role=ROLE_TEACHER,
+            profile__teacher_id__in=Group.objects.filter(
+                group_curator__isnull=False
+            ).values("group_curator_id"),
+        )
+
+    if filters["tag"]:
+        kind, tag = filters["tag"][0], int(filters["tag"][1:])
+
+        if kind == "t":
+            # Тег преподавателя: сами преподаватели
+            queryset = queryset.filter(
+                is_staff=False,
+                profile__role=ROLE_TEACHER,
+                profile__teacher__teacher_tag_id=tag,
+            )
+        else:
+            # Тег группы: студенты этой группы
+            queryset = queryset.filter(
+                is_staff=False,
+                profile__role=ROLE_STUDENT,
+                profile__group__group_tag_id=tag,
+            )
+
+    return queryset
+
+
+def _save_user(request, User, group_by_id, teacher_tag_by_id, valid_roles):
+    """Одна кнопка «Сохранить» в строке пользователя.
+
+    Из формы приходит только то, что есть в строке: роль (если её можно
+    менять), группа (у студента) или тег (у преподавателя). Если роль
+    изменилась, группа и тег в этом же запросе не трогаются: они относятся
+    к прежней роли.
+    """
+    post = request.POST
+    target = User.objects.filter(
+        pk=_int_param(post.get("user_id"))
+    ).first()
+
+    if target is None:
+        messages.error(request, "Пользователь не найден.")
+
+        return
+
+    name = target.get_username()
+    done = False
+
+    # Роль
+    new_role = post.get("role") if "role" in post else None
+
+    if new_role is not None and new_role not in valid_roles:
+        messages.error(request, "Выберите роль из списка.")
+
+        return
+
+    if new_role is not None and new_role != user_role(target):
+        if target.pk == request.user.pk:
+            messages.error(request, "Свою роль изменить нельзя.")
+
+        elif target.is_superuser:
+            messages.error(
+                request,
+                "Роль суперпользователя меняется только в админке.",
+            )
+
+        else:
+            set_role(target, new_role)
+            messages.success(
+                request, f"Пользователь {name}: {role_label(new_role)}."
+            )
+
+        return
+
+    # Группа студента
+    if "group" in post:
+        raw_group = post.get("group", "").strip()
+        group = group_by_id.get(_int_param(raw_group))
+
+        if raw_group and group is None:
+            messages.error(request, "Выберите группу из списка.")
+
+            return
+
+        if not set_group(target, group):
+            messages.error(request, "Группа назначается только студентам.")
+
+            return
+
+        done = True
+        messages.success(
+            request,
+            f"Студент {name}: "
+            + (f"группа {group}." if group else "группа не назначена."),
+        )
+
+    # Тег преподавателя
+    if "tag" in post:
+        raw_tag = post.get("tag", "").strip()
+        tag = teacher_tag_by_id.get(_int_param(raw_tag))
+
+        if raw_tag and tag is None:
+            messages.error(request, "Выберите тег из списка.")
+
+            return
+
+        if not set_teacher_tag(target, tag):
+            messages.error(request, "Тег назначается только преподавателям.")
+
+            return
+
+        done = True
+        messages.success(
+            request,
+            f"Преподаватель {name}: "
+            + (f"тег {tag.full_name}." if tag else "тег снят."),
+        )
+
+    if not done:
+        messages.info(request, f"Пользователь {name}: изменений нет.")
 
 
 @staff_required
@@ -1409,29 +1930,20 @@ def users_roles(request):
     User = get_user_model()
 
     groups = list(
-        Group.objects.order_by("group_name", "group_id")
+        Group.objects.select_related("group_curator").order_by(
+            "group_name", "group_id"
+        )
     )
     group_by_id = {group.pk: group for group in groups}
-    tags = list(
-        Tag.objects.select_related("tag_type").order_by(
-            "tag_type__tag_type_name", "tag_name", "tag_id"
-        )
+    group_tags = list(
+        GroupTag.objects.order_by("tag_name", "tag_id")
     )
-    tag_by_id = {tag.pk: tag for tag in tags}
+    teacher_tags = list(
+        TeacherTag.objects.order_by("tag_name", "tag_id")
+    )
+    teacher_tag_by_id = {tag.pk: tag for tag in teacher_tags}
+    group_tag_ids = {tag.pk for tag in group_tags}
     valid_roles = {value for value, _ in ROLE_CHOICES}
-
-    # Преподаватели без учётной записи (остались от прежних версий):
-    # их можно привязать к пользователю при смене роли
-    linked_ids = set(
-        Profile.objects.filter(teacher__isnull=False).values_list(
-            "teacher_id", flat=True
-        )
-    )
-    free_teachers = [
-        teacher
-        for teacher in Teacher.objects.order_by("teacher_name", "teacher_id")
-        if teacher.pk not in linked_ids
-    ]
 
     page = request.POST.get("page") or request.GET.get("page") or ""
     new_user_form = None
@@ -1473,119 +1985,26 @@ def users_roles(request):
 
                     messages.success(request, text + ".")
 
-                    return redirect(_users_url(page))
+                    # Новый человек в начале списка и подсвечен; страница и
+                    # фильтры сбрасываются, чтобы он точно был виден
+                    return redirect(_users_url(new=created.pk))
 
             # При ошибке форма показывается снова с введёнными данными
             _remember_new_user(request, new_user_form)
 
-        else:
-            role = request.POST.get("role", "")
-            target = User.objects.filter(
-                pk=_int_param(request.POST.get("user_id"))
-            ).first()
-
-            teacher_id = _int_param(request.POST.get("teacher"))
-            allowed = list(free_teachers)
-
-            if target is not None and own_teacher_id(target):
-                allowed.append(Teacher.objects.get(pk=own_teacher_id(target)))
-
-            teacher = next(
-                (item for item in allowed if item.pk == teacher_id),
-                None,
+        elif action == "save_user":
+            _save_user(
+                request, User, group_by_id, teacher_tag_by_id, valid_roles
+            )
+            kept = _parse_user_filters(
+                QueryDict(request.POST.get("qs", "")), set(group_by_id),
+                group_tag_ids, set(teacher_tag_by_id),
             )
 
-            # Смена группы студента
-            if action == "set_group":
-                raw_group = request.POST.get("group", "").strip()
-                group = group_by_id.get(_int_param(raw_group))
+            return redirect(_users_url(page, _filters_query(kept)))
 
-                if target is None:
-                    messages.error(request, "Пользователь не найден.")
-
-                elif raw_group and group is None:
-                    messages.error(request, "Выберите группу из списка.")
-
-                elif not set_group(target, group):
-                    messages.error(
-                        request,
-                        "Группа назначается только студентам.",
-                    )
-
-                elif group is None:
-                    messages.success(
-                        request,
-                        f"Студент {target.get_username()}: "
-                        "группа не назначена.",
-                    )
-
-                else:
-                    messages.success(
-                        request,
-                        f"Студент {target.get_username()}: "
-                        f"группа {group}.",
-                    )
-
-            # Тег преподавателя
-            elif action == "set_teacher_tag":
-                raw_tag = request.POST.get("tag", "").strip()
-                tag = tag_by_id.get(_int_param(raw_tag))
-
-                if target is None:
-                    messages.error(request, "Пользователь не найден.")
-
-                elif raw_tag and tag is None:
-                    messages.error(request, "Выберите тег из списка.")
-
-                elif not set_teacher_tag(target, tag):
-                    messages.error(
-                        request,
-                        "Тег назначается только преподавателям.",
-                    )
-
-                elif tag is None:
-                    messages.success(
-                        request,
-                        f"Преподаватель {target.get_username()}: "
-                        "тег снят.",
-                    )
-
-                else:
-                    messages.success(
-                        request,
-                        f"Преподаватель {target.get_username()}: "
-                        f"тег {tag.full_name}.",
-                    )
-
-            elif role not in valid_roles:
-                messages.error(request, "Выберите роль из списка.")
-
-            elif action == "set_role":
-                if target is None:
-                    messages.error(request, "Пользователь не найден.")
-
-                elif target.pk == request.user.pk:
-                    messages.error(
-                        request, "Свою роль изменить нельзя."
-                    )
-
-                elif target.is_superuser:
-                    messages.error(
-                        request,
-                        "Роль суперпользователя меняется только "
-                        "в админке.",
-                    )
-
-                else:
-                    set_role(target, role, teacher)
-                    messages.success(
-                        request,
-                        f"Пользователь {target.get_username()}: "
-                        f"{role_label(role)}.",
-                    )
-
-            else:
-                messages.error(request, "Неизвестное действие.")
+        else:
+            messages.error(request, "Неизвестное действие.")
 
             return redirect(_users_url(page))
 
@@ -1595,38 +2014,57 @@ def users_roles(request):
             initial=_remembered_new_user(request),
         )
 
+    filters = _parse_user_filters(
+        request.GET, set(group_by_id), group_tag_ids, set(teacher_tag_by_id)
+    )
+    ordering = (
+        ("last_name", "first_name", "username", "pk")
+        if filters["sort"] == "name" else ("-pk",)
+    )
     paginator = Paginator(
-        User.objects.select_related(
-            "profile", "profile__teacher"
-        ).order_by("username", "pk"),
+        _filter_users(
+            User.objects.select_related("profile", "profile__teacher"),
+            filters,
+        ).order_by(*ordering),
         USERS_PER_PAGE,
     )
     page_obj = paginator.get_page(page)
+    new_id = _int_param(request.GET.get("new"))
+
+    # Кто какие группы курирует — из уже загруженного списка групп
+    curated = {}
+
+    for group in groups:
+        if group.group_curator_id:
+            curated.setdefault(group.group_curator_id, []).append(group)
 
     rows = []
 
     for item in page_obj.object_list:
         role = user_role(item)
         current_teacher_id = own_teacher_id(item)
-        teacher_options = list(free_teachers)
-
-        if current_teacher_id:
-            teacher_options.append(item.profile.teacher)
+        current_group = group_by_id.get(own_group_id(item))
 
         rows.append({
             "user": item,
             "full_name": full_name(item),
             "role": role,
             "role_label": role_label(role),
-            "teacher_id": current_teacher_id,
-            "teacher_options": teacher_options,
             "is_student": role == ROLE_STUDENT,
             "is_teacher": role == ROLE_TEACHER,
+            "is_new": item.pk == new_id,
+            "teacher_id": current_teacher_id,
             "teacher_tag_id": (
                 item.profile.teacher.teacher_tag_id
                 if current_teacher_id else None
             ),
-            "group": group_by_id.get(own_group_id(item)),
+            "group": current_group,
+            "curator": (
+                current_group.group_curator
+                if current_group and role == ROLE_STUDENT else None
+            ),
+            "curated": curated.get(current_teacher_id, []),
+            "last_login": item.last_login,
             "locked": (
                 item.is_superuser or item.pk == request.user.pk
             ),
@@ -1635,11 +2073,25 @@ def users_roles(request):
     context = {
         "rows": rows,
         "groups": groups,
-        "tags": tags,
+        "teacher_tags": teacher_tags,
+        "tag_filter_groups": [
+            ("Теги групп", [(f"g{tag.pk}", tag.tag_name) for tag in group_tags]),
+            (
+                "Теги преподавателей",
+                [(f"t{tag.pk}", tag.tag_name) for tag in teacher_tags],
+            ),
+        ],
         "new_user_form": new_user_form,
         "role_choices": ROLE_CHOICES,
         "page_obj": page_obj,
         "page_numbers": _page_numbers(paginator, page_obj),
+        "filters": filters,
+        "filter_query": _filters_query(filters),
+        "has_filters": bool(_filters_query({**filters, "sort": "new"})),
+        "found_count": paginator.count,
+        "user_role_filters": [
+            (value, role_label(value)) for value in USER_ROLE_FILTERS
+        ],
     }
 
     return render(request, "users.html", context)
@@ -1650,17 +2102,19 @@ def users_roles(request):
 # ---------------------------------------------------------------------------
 
 WORKSHOP_FORMS = {
-    "tag_type": TagTypeForm,
-    "tag": TagForm,
+    "group_tag": GroupTagForm,
+    "teacher_tag": TeacherTagForm,
     "group": GroupForm,
     "pair": PairForm,
+    "semester": SemesterForm,
 }
 
 FORM_PREFIXES = {
-    "tag_type": "tag_type",
-    "tag": "tag",
+    "group_tag": "group_tag",
+    "teacher_tag": "teacher_tag",
     "group": "group",
     "pair": "pair",
+    "semester": "semester",
 }
 
 
@@ -1676,10 +2130,11 @@ def _build_workshop_forms(data=None, active_key=None):
 
 # Разделы Кузни: ключ, заголовок, действие «Добавить», что выбирать
 WORKSHOP_CARDS = (
-    ("tag", "Теги", "add_tag", "тег"),
-    ("tag_type", "Типы тегов", "add_tag_type", "тип тега"),
+    ("group_tag", "Теги групп", "add_group_tag", "тег"),
+    ("teacher_tag", "Теги преподавателей", "add_teacher_tag", "тег"),
     ("group", "Группы", "add_group", "группу"),
     ("pair", "Пары", "add_pair", "пару"),
+    ("semester", "Семестры", "add_semester", "семестр"),
 )
 
 EDIT_ACTIONS = ("update_item", "delete_item", "delete_confirmed")
@@ -1700,11 +2155,6 @@ def _make_edit_form(key, item, data=None):
         instance=item,
         prefix=FORM_PREFIXES[key],
     )
-
-    # Группу у существующей пары менять нельзя: расписание групп ссылается
-    # на пары именно своей группы. Нужна другая группа — создайте новую пару.
-    if key == "pair":
-        form.fields["group"].disabled = True
 
     return form
 
@@ -1739,12 +2189,14 @@ def _edit_state(request, key, raw_item, action):
             else:
                 new_teacher = form.cleaned_data.get("teacher")
 
+                warning = ""
+
                 if (
                     key == "pair"
                     and new_teacher is not None
                     and new_teacher.pk != old_teacher_id
                 ):
-                    error = pair_teacher_conflict(item, new_teacher)
+                    warning = pair_teacher_conflict(item, new_teacher)
 
                 if not error:
                     try:
@@ -1759,6 +2211,11 @@ def _edit_state(request, key, raw_item, action):
                         label = item_label(key, item)
                         success = f"Изменения сохранены: {label}."
                         form = None
+
+                        if warning:
+                            messages.warning(
+                                request, f"Совпадение у преподавателя. {warning}"
+                            )
 
         elif action == "delete_item":
             error = delete_blocker(key, item)
@@ -2043,6 +2500,8 @@ def _run_import(request):
     """Загрузка CSV из формы Кузни. Возвращает отчёт для карточки."""
     kind = request.POST.get("kind", "")
     dry_run = request.POST.get("dry_run") == "1"
+    replace = request.POST.get("mode") == "replace"
+    confirmed = request.POST.get("confirm_replace") == "1"
     upload = request.FILES.get("file")
 
     if upload is None:
@@ -2054,7 +2513,10 @@ def _run_import(request):
         return report
 
     # На один байт больше предела: так видно, что файл слишком большой
-    return import_csv(kind, upload.read(MAX_FILE_BYTES + 1), dry_run)
+    return import_csv(
+        kind, upload.read(max_bytes(kind) + 1), dry_run,
+        replace=replace, confirmed=confirmed,
+    )
 
 
 @staff_required
@@ -2072,6 +2534,16 @@ def workshop_export(request):
         content_type="text/csv; charset=utf-8",
     )
     name = f"raspisite_{kind}{'_template' if template else ''}.csv"
+    response["Content-Disposition"] = f'attachment; filename="{name}"'
+
+    return response
+
+
+@staff_required
+def workshop_export_all(request):
+    """Все наборы Кузни одним ZIP: те же CSV, что и при выгрузке по одному."""
+    response = HttpResponse(build_zip(), content_type="application/zip")
+    name = f"raspisite_{timezone.localdate().isoformat()}.zip"
     response["Content-Disposition"] = f'attachment; filename="{name}"'
 
     return response
@@ -2101,7 +2573,6 @@ def schedule_overview(request):
         "shift",
         "group_course",
         "group_tag",
-        "group_tag__tag_type",
     ).order_by("shift_id", "group_name", "group_id")
 
     if selected_shift_id:
@@ -2175,10 +2646,11 @@ def workshop(request):
     )
 
     form_actions = {
-        "add_tag": "tag",
-        "add_tag_type": "tag_type",
+        "add_group_tag": "group_tag",
+        "add_teacher_tag": "teacher_tag",
         "add_group": "group",
         "add_pair": "pair",
+        "add_semester": "semester",
     }
 
     active_key = form_actions.get(action)
@@ -2271,6 +2743,23 @@ def workshop(request):
         # show_time переключает смену или режим,
         # не сохраняя введённые значения.
 
+    # После успешного действия — переход на обычную страницу (GET), а не
+    # показ ответа на POST: обновление страницы (F5) не отправляет форму
+    # повторно, а поля добавления не остаются заполненными.
+    if request.method == "POST" and success and not error:
+        messages.success(request, success)
+        extra = {}
+
+        if edit_key:
+            extra["edit"] = edit_key
+
+            if edit is not None and edit["item"] is not None:
+                extra["item"] = edit["item"].pk
+
+        return redirect(
+            _workshop_url(selected_shift_id, selected_time_mode, **extra)
+        )
+
     context = _build_workshop_context(
         forms=forms,
         edit=edit,
@@ -2302,10 +2791,11 @@ def _build_workshop_context(
     preserve_post=False,
 ):
     return {
-        "tag_form": forms["tag"],
-        "tag_type_form": forms["tag_type"],
+        "group_tag_form": forms["group_tag"],
+        "teacher_tag_form": forms["teacher_tag"],
         "group_form": forms["group"],
         "pair_form": forms["pair"],
+        "semester_form": forms["semester"],
         "cards": _build_cards(
             forms, edit, selected_shift_id, selected_time_mode
         ),

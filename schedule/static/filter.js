@@ -120,7 +120,6 @@
 
         var color = form.querySelector('input[name$="tag_color"]');
         var name = form.querySelector('input[name$="tag_name"]');
-        var type = form.querySelector('select[name$="tag_type"]');
 
         if (!color || !name) {
             return;
@@ -131,24 +130,17 @@
                 ? color.value.toLowerCase()
                 : "#6b7280";
             var label = name.value.replace(/\s+/g, " ").trim();
-            var typeName = type && type.value
-                ? type.options[type.selectedIndex].text
-                : "";
 
             chip.style.backgroundColor = value;
             chip.style.color = textColor(value);
             chip.textContent = label || "Название";
-            chip.title = typeName && label ? typeName + ": " + label : "";
+            chip.title = label;
         }
 
         [color, name].forEach(function (field) {
             field.addEventListener("input", update);
             field.addEventListener("change", update);
         });
-
-        if (type) {
-            type.addEventListener("change", update);
-        }
 
         row.hidden = false;
         update();

@@ -96,7 +96,9 @@ def set_role(user, role, teacher=None):
     Администратор отличается правом персонала is_staff, поэтому оно
     выставляется и снимается вместе с ролью. Преподаватель всегда связан
     с записью Teacher: если её не указали, берётся прежняя или создаётся
-    новая по ФИО пользователя.
+    новая по ФИО пользователя. При снятии роли преподавателя связь с записью
+    Teacher сохраняется (пары и расписание остаются в истории), поэтому при
+    повторном назначении роли используется та же запись, а не дубль.
     """
     profile, _ = Profile.objects.get_or_create(user=user)
 
@@ -106,7 +108,9 @@ def set_role(user, role, teacher=None):
         )
 
     profile.role = role
-    profile.teacher = teacher if role == ROLE_TEACHER else None
+
+    if role == ROLE_TEACHER:
+        profile.teacher = teacher
 
     if role != ROLE_STUDENT:
         profile.group = None
@@ -146,6 +150,46 @@ def set_teacher_tag(user, tag):
     Teacher.objects.filter(pk=teacher_id).update(teacher_tag=tag)
 
     return True
+
+
+def can_view_student(viewer, student):
+    """Может ли viewer открыть профиль студента student.
+
+    Администратор — любой; студент — только свой; преподаватель — профили
+    студентов группы, которую он курирует. Остальным нельзя.
+    """
+    if not viewer.is_authenticated:
+        return False
+
+    if viewer.is_staff or viewer.pk == student.pk:
+        return True
+
+    teacher_id = own_teacher_id(viewer)
+    group_id = own_group_id(student)
+
+    if not teacher_id or not group_id:
+        return False
+
+    return Group.objects.filter(
+        pk=group_id, group_curator_id=teacher_id
+    ).exists()
+
+
+def can_view_group_students(viewer, group):
+    """Может ли viewer видеть список студентов группы group.
+
+    Администратор и куратор этой группы; остальным показывается только
+    число студентов.
+    """
+    if not viewer.is_authenticated:
+        return False
+
+    if viewer.is_staff:
+        return True
+
+    teacher_id = own_teacher_id(viewer)
+
+    return bool(teacher_id) and group.group_curator_id == teacher_id
 
 
 def real_teachers():

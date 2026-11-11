@@ -1,0 +1,117 @@
+{% extends "main.html" %}
+{% load static %}
+{% load people %}
+
+{% block scripts %}{{ block.super }}<script src="{% static 'diary/journal.js' %}" defer></script>{% endblock %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Оценки и посещаемость</p>
+            <h1>ЖУРНАЛ</h1>
+        </div>
+
+        <div class="page-head-actions">
+            <a class="date-nav-link" href="{% url 'diary_home' %}">Дневник</a>
+            <a class="date-nav-link" href="{% url 'diary_journal_general' %}">Общий журнал</a>
+
+            {% if week_mode %}
+                <nav class="date-nav" aria-label="Недели">
+                    <a class="date-nav-link" href="{{ prev_url }}">← Неделя</a>
+                    <span class="date-nav-label">{{ period_label }}</span>
+                    {% if not is_current_week %}
+                        <a class="date-nav-link" href="{{ today_url }}">Сегодня</a>
+                    {% endif %}
+                    <a class="date-nav-link" href="{{ next_url }}">Неделя →</a>
+                </nav>
+            {% else %}
+                <span class="date-nav-label">{{ period_label }}</span>
+            {% endif %}
+        </div>
+    </header>
+
+    {% include "diary/journal_filters.html" %}
+
+    {% for note in notes %}
+        <p class="message warning">{{ note }}</p>
+    {% endfor %}
+
+    <section class="users-card person-card diary-wide journal-card">
+        {% if not groups %}
+            <p class="users-hint">У вас пока нет групп для журнала.</p>
+        {% elif not chosen %}
+            <p class="users-hint">Выберите одну или несколько групп и нажмите «Показать».</p>
+        {% elif not has_columns %}
+            <p class="users-hint">За выбранный период занятий нет.</p>
+        {% elif not rows %}
+            <p class="users-hint">В выбранных группах пока нет студентов.</p>
+        {% else %}
+            <div class="journal-summary">
+                <span>Студентов: <b>{{ students_count }}</b></span>
+                <span>Занятий: <b>{{ columns|length }}</b></span>
+                <span>Оценок: <b>{{ scores_count }}</b></span>
+                <span>Средний балл: <b>{{ average }}</b></span>
+                <span class="journal-legend"><span class="journal-flag is-absent">Н</span> не был
+                    <span class="journal-flag is-ill">Б</span> болеет</span>
+            </div>
+
+            <div class="diary-scroll">
+                <table class="diary-grid journal-grid" style="width: {{ table_width }}px">
+                    <colgroup>
+                        <col class="diary-col-student">
+                        <col class="journal-col-group">
+                        <col class="journal-col-stat"><col class="journal-col-stat">
+                        {% for column in columns %}<col class="diary-col-mark">{% endfor %}
+                    </colgroup>
+                    <thead>
+                        <tr class="diary-row-day">
+                            <th rowspan="2" class="diary-student">Студент</th>
+                            <th rowspan="2" class="journal-group">Группа</th>
+                            <th rowspan="2" class="journal-stat" title="Число оценок за период">Оценок</th>
+                            <th rowspan="2" class="journal-stat" title="Средний балл за период (без Н и Б)">Средний</th>
+                            {% for head in day_heads %}
+                                <th colspan="{{ head.count }}" class="diary-day{% if head.is_today %} is-today{% endif %}">
+                                    {{ head.name }} {{ head.label }}
+                                </th>
+                            {% endfor %}
+                        </tr>
+                        <tr class="diary-row-lesson">
+                            {% for column in columns %}
+                                <th class="diary-lesson-head{% if column.first_of_day %} is-first{% endif %}"
+                                    title="{{ column.subject }} — {{ column.teacher }}{% if column.note %} ({{ column.note }}){% endif %}">
+                                    <a href="{% url 'diary_group' group_id=column.link_group %}?date={{ column.day_iso }}">
+                                        <span class="diary-lesson-no">{{ column.number }} пара</span>
+                                        <span class="diary-lesson-text">{{ column.subject }}</span>
+                                    </a>
+                                </th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in rows %}
+                            <tr class="journal-stripe-{{ row.stripe }}">
+                                <th scope="row" class="diary-student" title="{{ row.name }}">
+                                    <a href="{% url 'student_card' user_id=row.user.pk %}">{{ row.name|person }}</a>
+                                </th>
+                                <th scope="row" class="journal-group">{{ row.group }}</th>
+                                <td class="diary-cell journal-stat">{{ row.scores }}</td>
+                                <td class="diary-cell journal-stat">{{ row.average }}</td>
+                                {% for cell in row.cells %}
+                                    <td class="diary-cell{% if cell.none %} is-none{% endif %}{% if cell.first_of_day %} is-first{% endif %}">
+                                        {% if cell.kind == "absent" %}<span class="journal-flag is-absent">{{ cell.text }}</span>
+                                        {% elif cell.kind == "ill" %}<span class="journal-flag is-ill">{{ cell.text }}</span>
+                                        {% else %}{{ cell.text }}{% endif %}
+                                    </td>
+                                {% endfor %}
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% endif %}
+    </section>
+
+</div>
+{% endblock %}

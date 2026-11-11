@@ -1,0 +1,2 @@
+{# Тег в плитке профиля; администратору — ссылка на список пользователей с этим тегом. prefix: g — тег группы, t — тег преподавателя #}
+{% if user.is_staff %}<a class="profile-tag-link" href="{% url 'users' %}?tag={{ prefix }}{{ tag.pk }}" title="Показать пользователей с этим тегом">{% include "tag_chip.html" with tag=tag %}</a>{% else %}{% include "tag_chip.html" with tag=tag %}{% endif %}

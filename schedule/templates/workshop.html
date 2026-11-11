@@ -126,6 +126,8 @@
 
             {% include "workshop_data_card.html" %}
 
+            {% include "workshop_diary_card.html" %}
+
         </div>
 
         <!-- Столбец 2: группы и пары -->
@@ -137,12 +139,14 @@
 
         </div>
 
-        <!-- Столбец 3: теги и типы тегов -->
+        <!-- Столбец 3: теги -->
         <div class="workshop-column">
 
-            {% include "workshop_card.html" with card=cards.tag %}
+            {% include "workshop_card.html" with card=cards.group_tag %}
 
-            {% include "workshop_card.html" with card=cards.tag_type %}
+            {% include "workshop_card.html" with card=cards.teacher_tag %}
+
+            {% include "workshop_card.html" with card=cards.semester %}
 
             <section class="workshop-card">
                 <h2>Общее расписание</h2>

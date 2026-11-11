@@ -25,6 +25,12 @@
         </div>
     </form>
 
+    <!-- Все наборы сразу: один ZIP с теми же CSV (загружать по одному) -->
+    <a class="workshop-button workshop-button-link workshop-zip"
+       href="{% url 'workshop_export_all' %}">
+        Скачать всё одним ZIP
+    </a>
+
     <!-- Импорт: файл, который выдал экспорт -->
     <form class="workshop-data-form" method="post"
           enctype="multipart/form-data" action="{% url 'workshop' %}">
@@ -62,53 +68,11 @@
     <p class="workshop-hint">
         Принимаются только файлы в том формате, который выдаёт экспорт.
         Порядок загрузки: Звонки, Преподаватели, Группы, Пары, Расписание.
-        Если в файле есть ошибки, не сохраняется ничего.
+        Файлы из ZIP загружаются по одному. Если в файле есть ошибки,
+        не сохраняется ничего. Оценки дневника — в отдельной карточке.
     </p>
 
-    {% if import_report %}
-        <div class="workshop-report{% if import_report.fatal or import_report.errors %} is-error{% else %} is-ok{% endif %}"
-             role="status">
-
-            <p class="workshop-report-title">
-                {{ import_report.title|default:"Импорт" }}:
-                {% if import_report.fatal %}
-                    файл не загружен
-                {% elif import_report.dry_run %}
-                    проверка
-                {% else %}
-                    загрузка
-                {% endif %}
-            </p>
-
-            {% if import_report.fatal %}
-                <p>{{ import_report.fatal|capfirst }}.</p>
-            {% else %}
-                <p>
-                    {% if import_report.dry_run %}Добавилось бы{% else %}Добавлено{% endif %}:
-                    {{ import_report.created }};
-                    {% if import_report.dry_run %}обновилось бы{% else %}обновлено{% endif %}:
-                    {{ import_report.updated }};
-                    без изменений: {{ import_report.unchanged }}.
-                </p>
-
-                {% if import_report.errors %}
-                    <p class="workshop-report-title">
-                        Ничего не сохранено. Ошибок: {{ import_report.errors|length }}
-                    </p>
-
-                    <ul class="workshop-report-list">
-                        {% for item in import_report.errors|slice:":50" %}
-                            <li>{{ item }}</li>
-                        {% endfor %}
-                    </ul>
-
-                    {% if import_report.errors|length > 50 %}
-                        <p>Показаны первые 50 ошибок.</p>
-                    {% endif %}
-                {% elif import_report.dry_run %}
-                    <p>Ошибок нет. Снимите галочку и загрузите файл ещё раз.</p>
-                {% endif %}
-            {% endif %}
-        </div>
+    {% if import_report and import_kind != "diary" %}
+        {% include "workshop_report.html" %}
     {% endif %}
 </section>

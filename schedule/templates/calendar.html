@@ -10,6 +10,11 @@
         </div>
 
         <div class="page-head-actions">
+        <a class="date-nav-link"
+           href="{% url 'calendar_year' %}?year={{ year }}">
+            Годовой
+        </a>
+
         <nav class="date-nav" aria-label="Месяцы">
             {% if prev %}
                 <a class="date-nav-link"

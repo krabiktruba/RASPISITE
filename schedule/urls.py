@@ -43,11 +43,33 @@ urlpatterns = [
         name="users",
     ),
 
+    path(
+        "students/<int:user_id>/profile/",
+        views.student_card,
+        name="student_card",
+    ),
+
+    path(
+        "teachers/<int:teacher_id>/profile/",
+        views.teacher_card,
+        name="teacher_card",
+    ),
+    path(
+        "groups/<int:group_id>/profile/",
+        views.group_card,
+        name="group_card",
+    ),
+
     # Расписание
     path(
         "calendar/",
         views.calendar_view,
         name="calendar",
+    ),
+    path(
+        "calendar/year/",
+        views.calendar_year,
+        name="calendar_year",
     ),
     path(
         "groups/<int:group_id>/schedule/",
@@ -78,6 +100,11 @@ urlpatterns = [
         "workshop/export/",
         views.workshop_export,
         name="workshop_export",
+    ),
+    path(
+        "workshop/export/all/",
+        views.workshop_export_all,
+        name="workshop_export_all",
     ),
     path(
         "workshop/overview/",

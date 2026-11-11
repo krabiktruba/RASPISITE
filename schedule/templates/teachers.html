@@ -1,4 +1,5 @@
 {% extends "main.html" %}
+{% load people %}
 
 {% block content %}
 
@@ -7,12 +8,16 @@
     <header class="daily-header page-head">
         <div class="page-head-title">
             {% if selected_teacher %}
-                <p class="page-head-caption">
-                    <span class="page-head-name">{{ selected_teacher.teacher_name }}</span>
+                <p class="page-head-caption">Расписание преподавателя</p>
+                <div class="page-head-line">
+                    <h1><a class="page-head-link"
+                           href="{% url 'teacher_card' teacher_id=selected_teacher.teacher_id %}"
+                           title="Профиль преподавателя">{{ selected_teacher.teacher_name }}</a></h1>
                     {% include "tag_chip.html" with tag=selected_teacher.teacher_tag %}
-                </p>
+                </div>
+            {% else %}
+                <h1>ПРЕПОДАВАТЕЛИ</h1>
             {% endif %}
-            <h1>ПРЕПОДАВАТЕЛИ</h1>
         </div>
 
         <div class="page-head-actions">
@@ -33,7 +38,7 @@
                             <a class="teacher-result{% if teacher.teacher_id == selected_teacher_id %} is-selected{% endif %}"
                                href="?teacher={{ teacher.teacher_id }}{% if date_param %}&amp;date={{ date_param }}{% endif %}{% if selected_shift_id %}&amp;shift={{ selected_shift_id }}{% endif %}"
                                {% if teacher.teacher_id == selected_teacher_id %}aria-current="true"{% endif %}>
-                                <span>{{ teacher.teacher_name }}</span>
+                                <span>{{ teacher.teacher_name|person }}</span>
                                 {% include "tag_chip.html" with tag=teacher.teacher_tag %}
                             </a>
                         </li>

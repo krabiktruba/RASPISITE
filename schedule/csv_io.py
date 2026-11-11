@@ -9,8 +9,18 @@
     bells     — звонки: время пар и перемен по сменам;
     teachers  — преподаватели;
     groups    — группы (курс, смена, куратор, тег);
-    pairs     — пары: предмет группы с преподавателем;
-    schedule  — расписание: какая пара стоит в какой день и на какой паре.
+    pairs     — пары: предмет с преподавателем и группа, к которой пара
+                привязана (общая пара — по строке на каждую группу; пара без
+                группы записывается с пустой группой);
+    schedule  — расписание: какая пара стоит в какой день и на какой паре;
+    diary     — оценки дневника (отдельная карточка Кузни; формат описан в
+                diary/csv_marks.py). Загружается в двух режимах: «наложить»
+                (записи из файла добавляются и обновляются, остальные
+                остаются) и «заменить полностью» (все оценки удаляются и
+                остаются только записи из файла).
+
+Все наборы сразу выдаёт один ZIP (build_zip): внутри те же файлы, что и при
+выгрузке по одному. Загружать их по-прежнему нужно по одному.
 
 Файл: UTF-8 с BOM, разделитель «;» (так его открывает Excel). При загрузке
 понимается и «,», а также кодировка Windows-1251 (Excel сохраняет в ней).
@@ -23,28 +33,35 @@
 
 import csv
 import io
+import zipfile
 from datetime import datetime
 
 from django.db import DatabaseError, transaction
+from django.db.models import Prefetch
 
 from .dates import WEEKDAY_NAMES
+from .group_names import check_group_name
 from .models import (
     BreakHours,
     Course,
     Day,
     Group,
+    GroupTag,
     Pair,
+    PairGroup,
     Shift,
     StudyHours,
-    Tag,
-    TagType,
     Teacher,
+    TeacherTag,
     Weekday,
 )
 
 DELIMITER = ";"
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_ROWS = 5000
+# Оценок дневника много больше, чем строк справочников
+DIARY_MAX_FILE_BYTES = 12 * 1024 * 1024
+DIARY_MAX_ROWS = 100000
 
 KIND_STUDY = "Пара"
 KIND_BREAK = "Перемена"
@@ -132,30 +149,30 @@ def _group(name):
     )
 
 
-def _tag(value):
-    """«Тип: Название» -> тег (создаётся при необходимости); пусто -> None."""
+def _tag(model, value):
+    """Название -> тег нужной таблицы (создаётся при необходимости).
+
+    model — GroupTag или TeacherTag; пусто -> None. Если такой тег уже есть,
+    берётся он (без учёта регистра).
+    """
     value = _clean(value)
 
     if not value:
         return None
 
-    type_name, separator, tag_name = value.partition(":")
-    type_name, tag_name = _clean(type_name), _clean(tag_name)
-
-    if not separator or not type_name or not tag_name:
-        raise RowError(f"тег «{value}» нужно записать как «Тип: Название»")
-
-    if len(type_name) > 100 or len(tag_name) > 100:
+    if len(value) > 100:
         raise RowError(f"тег «{value}» слишком длинный")
 
-    tag_type, _ = TagType.objects.get_or_create(tag_type_name=type_name)
-    tag, _ = Tag.objects.get_or_create(tag_type=tag_type, tag_name=tag_name)
+    tag = model.objects.filter(tag_name__iexact=value).order_by("tag_id").first()
+
+    if tag is None:
+        tag = model.objects.create(tag_name=value)
 
     return tag
 
 
 def _tag_text(tag):
-    return f"{tag.tag_type.tag_type_name}: {tag.tag_name}" if tag else ""
+    return tag.tag_name if tag else ""
 
 
 def _weekday(data, column):
@@ -231,7 +248,7 @@ def _export_teachers():
     return [
         [teacher.teacher_name, _tag_text(teacher.teacher_tag)]
         for teacher in Teacher.objects.select_related(
-            "teacher_tag", "teacher_tag__tag_type"
+            "teacher_tag"
         ).order_by("teacher_name", "teacher_id")
     ]
 
@@ -246,18 +263,25 @@ def _export_groups():
             _tag_text(group.group_tag),
         ]
         for group in Group.objects.select_related(
-            "group_curator", "group_tag", "group_tag__tag_type"
+            "group_curator", "group_tag"
         ).order_by("group_name", "group_id")
     ]
 
 
 def _export_pairs():
-    return [
-        [pair.group.group_name, pair.pair_name, pair.teacher.teacher_name]
-        for pair in Pair.objects.select_related(
-            "group", "teacher"
-        ).order_by("group__group_name", "pair_name", "pair_id")
-    ]
+    rows = []
+
+    pairs = Pair.objects.select_related("teacher").prefetch_related(
+        Prefetch("groups", queryset=Group.objects.order_by("group_name"))
+    ).order_by("pair_name", "teacher__teacher_name", "pair_id")
+
+    for pair in pairs:
+        names = [group.group_name for group in pair.groups.all()]
+
+        for name in names or [""]:
+            rows.append([name, pair.pair_name, pair.teacher.teacher_name])
+
+    return rows
 
 
 def _export_schedule():
@@ -324,7 +348,7 @@ def _row_teachers(line, data, report, state):
     if count > 1:
         raise RowError(f"в базе несколько преподавателей «{name}»")
 
-    tag = _tag(data["Тег"])
+    tag = _tag(TeacherTag, data["Тег"])
 
     _upsert(
         Teacher,
@@ -352,7 +376,15 @@ def _row_groups(line, data, report, state):
         raise RowError(f"смены {shift_id} нет")
 
     curator = _teacher(curator_name) if curator_name else None
-    tag = _tag(data["Тег"])
+    tag = _tag(GroupTag, data["Тег"])
+
+    # Новая группа обязана называться по образцу; уже существующая (в том
+    # числе со старым названием) загружается как раньше
+    if not Group.objects.filter(group_name=name).exists():
+        try:
+            check_group_name(name, course_id)
+        except ValueError as error:
+            raise RowError(f"название «{name}»: {error}")
 
     _upsert(
         Group,
@@ -368,20 +400,31 @@ def _row_groups(line, data, report, state):
 
 
 def _row_pairs(line, data, report, state):
-    group = _group(_need(data, "Группа", 100))
+    group_name = _clean(data["Группа"])
+    group = _group(_need(data, "Группа", 100)) if group_name else None
     subject = _need(data, "Предмет", 150)
     teacher = _teacher(_need(data, "Преподаватель", 150))
 
-    _duplicate(state, (group.pk, subject, teacher.pk), line)
-
-    # Пара — это связка «предмет + преподаватель» в группе; существующую
-    # не трогаем, недостающую добавляем
-    _upsert(
-        Pair,
-        {"group": group, "pair_name": subject, "teacher": teacher},
-        {},
-        report,
+    _duplicate(
+        state, (group.pk if group else None, subject, teacher.pk), line
     )
+
+    # Пара — это связка «предмет + преподаватель»; одна пара может быть
+    # привязана к нескольким группам. Существующее не трогаем, недостающее
+    # добавляем
+    pair = Pair.objects.filter(
+        pair_name=subject, teacher=teacher
+    ).order_by("pair_id").first()
+    created = pair is None
+
+    if created:
+        pair = Pair.objects.create(pair_name=subject, teacher=teacher)
+
+    if group is None:
+        report["created" if created else "unchanged"] += 1
+        return
+
+    _upsert(PairGroup, {"pair": pair, "group": group}, {}, report)
 
 
 def _row_schedule(line, data, report, state):
@@ -394,12 +437,12 @@ def _row_schedule(line, data, report, state):
     _duplicate(state, (group.pk, weekday_id, number), line)
 
     pair = Pair.objects.filter(
-        group=group, pair_name=subject, teacher=teacher
+        groups=group, pair_name=subject, teacher=teacher
     ).order_by("pair_id").first()
 
     if pair is None:
         raise RowError(
-            f"у группы «{group.group_name}» нет пары «{subject}» "
+            f"к группе «{group.group_name}» не привязана пара «{subject}» "
             f"с преподавателем «{teacher.teacher_name}» "
             f"(сначала загрузите «Пары»)"
         )
@@ -416,7 +459,7 @@ def _row_schedule(line, data, report, state):
 
 
 def _after_schedule(report, state):
-    """Преподаватель не может вести двух групп в одно время."""
+    """Преподаватель у двух групп в одно время — предупреждение."""
     for weekday_id, number, teacher_id in sorted(state["touched"]):
         days = list(
             Day.objects.filter(
@@ -431,7 +474,8 @@ def _after_schedule(report, state):
         if len(days) > 1:
             names = ", ".join(day.group.group_name for day in days)
 
-            report["errors"].append(
+            # Только предупреждение: пара может быть общей (лекция)
+            report["warnings"].append(
                 f"{days[0].pair.teacher.teacher_name} в день "
                 f"«{WEEKDAY_NAMES[weekday_id]}», пара {number} стоит сразу "
                 f"у нескольких групп: {names}."
@@ -480,12 +524,59 @@ KINDS = {
         "row": _row_schedule,
         "after": _after_schedule,
     },
+    "diary": {
+        "title": "Дневник (оценки)",
+        "headers": None,  # заполняется ниже из diary.csv_marks
+        "export": None,
+        "row": None,
+        "after": None,
+        "separate": True,
+        "max_bytes": DIARY_MAX_FILE_BYTES,
+        "max_rows": DIARY_MAX_ROWS,
+    },
 }
 
 
+def _diary():
+    """Модуль оценок дневника (импорт по требованию: diary зависит от schedule)."""
+    from diary import csv_marks
+
+    return csv_marks
+
+
+def _export_diary():
+    return _diary().export_rows()
+
+
+def _row_diary(line, data, report, state):
+    _diary().import_row(line, data, report, state, {
+        "clean": _clean,
+        "RowError": RowError,
+        "number": _number,
+        "need": _need,
+        "duplicate": _duplicate,
+    })
+
+
+KINDS["diary"]["headers"] = [
+    "Студент (логин)", "ФИО", "Дата", "Номер пары",
+    "Предмет", "Преподаватель", "Оценка", "Поставил",
+]
+KINDS["diary"]["export"] = _export_diary
+KINDS["diary"]["row"] = _row_diary
+
+
 def kind_choices():
-    """[(ключ, название)] в порядке, удобном для загрузки."""
-    return [(key, kind["title"]) for key, kind in KINDS.items()]
+    """[(ключ, название)] для общей карточки: без наборов с отдельной карточкой."""
+    return [
+        (key, kind["title"]) for key, kind in KINDS.items()
+        if not kind.get("separate")
+    ]
+
+
+def max_bytes(kind):
+    """Наибольший размер файла этого набора."""
+    return KINDS.get(kind, {}).get("max_bytes", MAX_FILE_BYTES)
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +598,17 @@ def build_csv(kind, template=False):
     return (BOM + buffer.getvalue()).encode("utf-8")
 
 
+def build_zip():
+    """Один ZIP со всеми наборами: raspisite_<набор>.csv (как при выгрузке)."""
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for kind in KINDS:
+            archive.writestr(f"raspisite_{kind}.csv", build_csv(kind))
+
+    return buffer.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Чтение файла
 # ---------------------------------------------------------------------------
@@ -523,7 +625,7 @@ def _decode(raw):
     )
 
 
-def _read_rows(text, headers):
+def _read_rows(text, headers, max_rows=MAX_ROWS):
     """[(номер строки, {столбец: значение})]. Ошибки формата — ValueError."""
     lines = [line for line in text.splitlines() if line.strip()]
 
@@ -589,8 +691,8 @@ def _read_rows(text, headers):
                 {header: by_name[header.casefold()] for header in headers},
             ))
 
-            if len(rows) > MAX_ROWS:
-                raise ValueError(f"в файле больше {MAX_ROWS} строк")
+            if len(rows) > max_rows:
+                raise ValueError(f"в файле больше {max_rows} строк")
 
     except csv.Error as exc:
         raise ValueError(f"файл не похож на CSV ({exc})")
@@ -613,6 +715,9 @@ def _new_report(kind, dry_run):
         "updated": 0,
         "unchanged": 0,
         "errors": [],
+        "warnings": [],
+        "deleted": 0,
+        "replace": False,
         "fatal": "",
         "saved": False,
     }
@@ -627,8 +732,22 @@ def _ensure_weekdays():
         )
 
 
-def import_csv(kind, raw, dry_run=False):
-    """Загружает файл (байты) в выбранный набор. Возвращает отчёт."""
+def _diary_clear():
+    """Удаляет все оценки дневника; возвращает, сколько было."""
+    from diary.models import Mark
+
+    count = Mark.objects.count()
+    Mark.objects.all().delete()
+
+    return count
+
+
+def import_csv(kind, raw, dry_run=False, replace=False, confirmed=False):
+    """Загружает файл (байты) в выбранный набор. Возвращает отчёт.
+
+    replace — только для дневника: сначала удалить все оценки, оставить лишь
+    записи из файла (нужно confirmed — явное подтверждение).
+    """
     report = _new_report(kind, dry_run)
 
     if kind not in KINDS:
@@ -639,14 +758,27 @@ def import_csv(kind, raw, dry_run=False):
         report["fatal"] = "файл пустой"
         return report
 
-    if len(raw) > MAX_FILE_BYTES:
-        report["fatal"] = "файл больше 2 МБ"
+    spec = KINDS[kind]
+    limit = spec.get("max_bytes", MAX_FILE_BYTES)
+
+    if len(raw) > limit:
+        report["fatal"] = f"файл больше {limit // (1024 * 1024)} МБ"
         return report
 
-    spec = KINDS[kind]
+    replace = bool(replace) and bool(spec.get("separate"))
+    report["replace"] = replace
+
+    if replace and not confirmed:
+        report["fatal"] = (
+            "для полной замены поставьте галочку подтверждения: "
+            "все существующие оценки будут удалены"
+        )
+        return report
 
     try:
-        rows = _read_rows(_decode(raw), spec["headers"])
+        rows = _read_rows(
+            _decode(raw), spec["headers"], spec.get("max_rows", MAX_ROWS)
+        )
     except ValueError as exc:
         report["fatal"] = str(exc)
         return report
@@ -661,6 +793,9 @@ def import_csv(kind, raw, dry_run=False):
         with transaction.atomic():
             if kind == "schedule":
                 _ensure_weekdays()
+
+            if replace:
+                report["deleted"] = _diary_clear()
 
             for line, data in rows:
                 try:

@@ -4,7 +4,7 @@
 
     {% if not card.editing %}
 
-        <form method="post" action="{% url 'workshop' %}">
+        <form method="post" autocomplete="off" action="{% url 'workshop' %}">
             {% csrf_token %}
             <input type="hidden" name="time_shift"
                    value="{{ selected_shift_id }}">
@@ -12,7 +12,7 @@
                    value="{{ selected_time_mode }}">
 
             {{ card.form.as_p }}
-            {% if card.key == "tag" %}{% include "tag_preview.html" %}{% endif %}
+            {% if card.key == "group_tag" or card.key == "teacher_tag" %}{% include "tag_preview.html" %}{% endif %}
 
             <button class="workshop-button" type="submit"
                     name="action" value="{{ card.add_action }}">
@@ -81,14 +81,7 @@
                 {% else %}
 
                     {{ card.form.as_p }}
-                    {% if card.key == "tag" %}{% include "tag_preview.html" %}{% endif %}
-
-                    {% if card.key == "pair" %}
-                        <p class="workshop-hint">
-                            Группу у существующей пары изменить нельзя —
-                            создайте новую пару.
-                        </p>
-                    {% endif %}
+                    {% if card.key == "group_tag" or card.key == "teacher_tag" %}{% include "tag_preview.html" %}{% endif %}
 
                     <button class="workshop-button" type="submit"
                             name="action" value="update_item">

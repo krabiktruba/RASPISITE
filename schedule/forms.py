@@ -10,24 +10,25 @@ from django.core.exceptions import ValidationError
 from django.db.models import Q
 
 from .access import create_account, real_teachers
+from .group_names import FORMAT_HINT, check_group_name, is_standard_name
 from .gmail import MAX_ADDRESS_LENGTH, normalize_gmail
 from .tags import TAG_COLOR_DEFAULT, normalize_color
 from .models import (
     ROLE_STUDENT,
     ROLE_TEACHER,
-    TagType,
-    Tag,
+    GroupTag,
+    TeacherTag,
     Teacher,
     Group,
     Pair,
+    Semester,
+    Day,
     Course,
     Shift,
     BreakHours,
 )
 
 FIELD_LABELS = {
-    "tag_type_name": "Название типа тега",
-    "tag_type": "Тип тега",
     "tag_name": "Название тега",
     "tag_color": "Цвет тега",
     "teacher_tag": "Тег преподавателя",
@@ -38,7 +39,11 @@ FIELD_LABELS = {
     "group_name": "Название группы",
     "shift": "Смена",
     "pair_name": "Название предмета",
+    "semester_number": "Семестр",
+    "start_date": "Начало",
+    "end_date": "Конец",
     "group": "Группа",
+    "groups": "Группы",
     "teacher": "Преподаватель",
     "pair_number": "Номер пары",
     "break_number": "Номер перемены",
@@ -51,7 +56,7 @@ FIELD_LABELS = {
     "role": "Роль",
     "last_name": "Фамилия",
     "first_name": "Имя",
-    "patronymic": "Отчество (необязательно)",
+    "patronymic": "Отчество",
     "username": "Почта Gmail (логин)",
     "password": "Пароль",
 }
@@ -63,8 +68,8 @@ class WorkshopFormMixin:
         super().__init__(*args, **kwargs)
 
         ordering = {
-            "TagType": "tag_type_name",
-            "Tag": "tag_name",
+            "GroupTag": "tag_name",
+            "TeacherTag": "tag_name",
             "Teacher": "teacher_name",
             "Group": "group_name",
             "Course": "course_id",
@@ -88,9 +93,6 @@ class WorkshopFormMixin:
 
                 field.label_from_instance = self.choice_label
 
-                if model is Tag:
-                    field.queryset = field.queryset.select_related("tag_type")
-
                 if field.required:
                     field.empty_label = "— Выберите —"
                 else:
@@ -106,15 +108,13 @@ class WorkshopFormMixin:
 
     @staticmethod
     def choice_label(obj):
-        # Теги в списках — «Тип: Название», чтобы одинаковые названия
-        # разных типов не путались
-        if isinstance(obj, Tag):
-            return obj.full_name
+        # Теги в списках подписаны только названием
+        if isinstance(obj, (GroupTag, TeacherTag)):
+            return obj.tag_name
 
         for attribute in (
                 "teacher_name",
                 "tag_name",
-                "tag_type_name",
                 "group_name",
                 "pair_name",
         ):
@@ -131,11 +131,6 @@ class WorkshopFormMixin:
 
         return str(obj)
 
-class TagTypeForm(WorkshopFormMixin, forms.ModelForm):
-    class Meta:
-        model = TagType
-        fields = ("tag_type_name",)
-
 class ColorInput(forms.TextInput):
     """Выбор цвета встроенным окном браузера (без JavaScript)."""
 
@@ -143,10 +138,31 @@ class ColorInput(forms.TextInput):
 
 
 class TagForm(WorkshopFormMixin, forms.ModelForm):
+    """Форма тега. Модель выбирается в наследнике: GroupTag или TeacherTag."""
+
     class Meta:
-        model = Tag
-        fields = ("tag_type", "tag_name", "tag_color")
+        model = GroupTag
+        fields = ("tag_name", "tag_color")
         widgets = {"tag_color": ColorInput()}
+
+    def clean_tag_name(self):
+        name = " ".join((self.cleaned_data.get("tag_name") or "").split())
+
+        if not name:
+            raise ValidationError("Введите название тега.")
+
+        # Название не поменяли (правят цвет) — проверять нечего
+        if self.instance.pk and name == self.instance.tag_name:
+            return name
+
+        same = self._meta.model.objects.filter(
+            tag_name__iexact=name
+        ).exclude(pk=self.instance.pk)
+
+        if same.exists():
+            raise ValidationError(f"Тег «{name}» уже есть.")
+
+        return name
 
     def clean_tag_color(self):
         value = (self.cleaned_data.get("tag_color") or "").strip()
@@ -158,6 +174,17 @@ class TagForm(WorkshopFormMixin, forms.ModelForm):
             return normalize_color(value)
         except ValueError as exc:
             raise ValidationError(str(exc))
+
+
+class GroupTagForm(TagForm):
+    class Meta(TagForm.Meta):
+        model = GroupTag
+
+
+class TeacherTagForm(TagForm):
+    class Meta(TagForm.Meta):
+        model = TeacherTag
+
 
 class GroupForm(WorkshopFormMixin, forms.ModelForm):
     class Meta:
@@ -172,6 +199,11 @@ class GroupForm(WorkshopFormMixin, forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self.fields["group_name"].widget.attrs.update({
+            "placeholder": "ПО-107",
+            "title": FORMAT_HINT,
+        })
 
         # Куратором может стать только преподаватель с учётной записью,
         # который ещё не курирует другую группу. Прежний куратор самой
@@ -193,11 +225,89 @@ class GroupForm(WorkshopFormMixin, forms.ModelForm):
             free
         ).order_by("teacher_name", "teacher_id")
 
+    def clean(self):
+        cleaned = super().clean()
+        name = (cleaned.get("group_name") or "").strip()
+        course = cleaned.get("group_course")
+
+        if not name or "group_name" in self.errors:
+            return cleaned
+
+        # Старое название, которое не трогают, не проверяется: так группы
+        # вроде «А-01» можно править дальше (курс, смену, куратора, тег)
+        if (
+            self.instance.pk
+            and name == self.instance.group_name
+            and not is_standard_name(name)
+        ):
+            return cleaned
+
+        try:
+            check_group_name(name, course.pk if course else None)
+        except ValueError as error:
+            self.add_error("group_name", str(error))
+
+        cleaned["group_name"] = name
+
+        return cleaned
+
+
+class SemesterForm(WorkshopFormMixin, forms.ModelForm):
+    """Семестр: номер и даты. Интервалы разных семестров не пересекаются."""
+
+    class Meta:
+        model = Semester
+        fields = ("semester_number", "start_date", "end_date")
+        widgets = {
+            "start_date": forms.DateInput(
+                attrs={"type": "date"}, format="%Y-%m-%d"
+            ),
+            "end_date": forms.DateInput(
+                attrs={"type": "date"}, format="%Y-%m-%d"
+            ),
+        }
+
+    def clean(self):
+        cleaned = super().clean()
+        start = cleaned.get("start_date")
+        end = cleaned.get("end_date")
+
+        if start and end:
+            if end < start:
+                raise ValidationError(
+                    "Конец семестра не может быть раньше начала."
+                )
+
+            # Границы входят в семестр: общий день тоже считается пересечением
+            other = Semester.objects.filter(
+                start_date__lte=end, end_date__gte=start
+            ).exclude(pk=self.instance.pk).order_by("semester_number").first()
+
+            if other is not None:
+                raise ValidationError(
+                    f"Даты пересекаются с {other.semester_number} семестром "
+                    f"({other.start_date:%d.%m.%Y} — {other.end_date:%d.%m.%Y})."
+                )
+
+        return cleaned
+
 
 class PairForm(WorkshopFormMixin, forms.ModelForm):
+    """Пара: название, преподаватель и группы, к которым она привязана."""
+
+    groups = forms.ModelMultipleChoiceField(
+        queryset=Group.objects.all(),
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        help_text=(
+            "Пару можно привязать к нескольким группам; в расписание группы "
+            "ставятся только привязанные к ней пары."
+        ),
+    )
+
     class Meta:
         model = Pair
-        fields = ("pair_name", "group", "teacher")
+        fields = ("pair_name", "teacher")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -212,6 +322,73 @@ class PairForm(WorkshopFormMixin, forms.ModelForm):
         self.fields["teacher"].queryset = Teacher.objects.filter(
             teachers
         ).order_by("teacher_name", "teacher_id")
+
+        if self.instance.pk and not self.is_bound:
+            self.initial["groups"] = list(
+                self.instance.groups.values_list("pk", flat=True)
+            )
+
+        # Порядок полей: название, преподаватель, группы
+        self.order_fields(("pair_name", "teacher", "groups"))
+
+    def clean_pair_name(self):
+        name = " ".join((self.cleaned_data.get("pair_name") or "").split())
+
+        if not name:
+            raise ValidationError("Введите название предмета.")
+
+        return name
+
+    def clean_groups(self):
+        chosen = self.cleaned_data.get("groups")
+
+        if self.instance.pk and chosen is not None:
+            removed = self.instance.groups.exclude(
+                pk__in=[group.pk for group in chosen]
+            )
+            used = sorted({
+                day.group.group_name
+                for day in Day.objects.filter(
+                    pair=self.instance, group__in=removed
+                ).select_related("group")
+            })
+
+            if used:
+                raise ValidationError(
+                    "Пара стоит в расписании группы "
+                    + ", ".join(used)
+                    + ": сначала уберите её из расписания, затем отвяжите."
+                )
+
+        return chosen
+
+    def clean(self):
+        cleaned = super().clean()
+        name = cleaned.get("pair_name")
+        teacher = cleaned.get("teacher")
+
+        if name and teacher is not None:
+            same = Pair.objects.filter(
+                teacher=teacher, pair_name__iexact=name
+            ).exclude(pk=self.instance.pk)
+
+            if same.exists():
+                self.add_error(
+                    "pair_name",
+                    "У этого преподавателя уже есть пара с таким названием: "
+                    "привяжите её к нужным группам.",
+                )
+
+        return cleaned
+
+    def save(self, commit=True):
+        pair = super().save(commit=commit)
+
+        if commit:
+            pair.groups.set(self.cleaned_data.get("groups") or [])
+
+        return pair
+
 
 class BreakHoursForm(WorkshopFormMixin, forms.ModelForm):
     class Meta:
@@ -255,7 +432,8 @@ def _name_part(value, label, required):
 class NewUserForm(WorkshopFormMixin, forms.Form):
     """Новый пользователь: студент или преподаватель.
 
-    ФИО (отчество не обязательно), почта Gmail — она же логин, пароль,
+    ФИО в порядке «Имя, Отчество, Фамилия» (отчество не обязательно, но
+    в подписи об этом не говорится), почта Gmail — она же логин, пароль,
     роль и группа. Студент обязательно привязывается к группе, а группа
     преподавателя — та, которую он будет курировать (можно не выбирать).
     """
@@ -295,9 +473,9 @@ class NewUserForm(WorkshopFormMixin, forms.Form):
 
     field_order = (
         "role",
-        "last_name",
         "first_name",
         "patronymic",
+        "last_name",
         "username",
         "password",
         "group",

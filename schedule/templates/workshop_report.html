@@ -1,0 +1,66 @@
+{# Отчёт последней загрузки CSV (общая карточка и карточка дневника) #}
+{% if import_report %}
+        <div class="workshop-report{% if import_report.fatal or import_report.errors %} is-error{% else %} is-ok{% endif %}"
+             role="status">
+
+            <p class="workshop-report-title">
+                {{ import_report.title|default:"Импорт" }}:
+                {% if import_report.fatal %}
+                    файл не загружен
+                {% elif import_report.dry_run %}
+                    проверка
+                {% else %}
+                    загрузка
+                {% endif %}
+            </p>
+
+            {% if import_report.fatal %}
+                <p>{{ import_report.fatal|capfirst }}.</p>
+            {% else %}
+                <p>
+                    {% if import_report.dry_run %}Добавилось бы{% else %}Добавлено{% endif %}:
+                    {{ import_report.created }};
+                    {% if import_report.dry_run %}обновилось бы{% else %}обновлено{% endif %}:
+                    {{ import_report.updated }};
+                    без изменений: {{ import_report.unchanged }}.
+                </p>
+
+                {% if import_report.replace and not import_report.fatal %}
+                    <p>
+                        {% if import_report.dry_run %}Было бы удалено{% else %}Удалено{% endif %}
+                        прежних оценок: {{ import_report.deleted }}.
+                    </p>
+                {% endif %}
+
+                {% if import_report.errors %}
+                    <p class="workshop-report-title">
+                        Ничего не сохранено. Ошибок: {{ import_report.errors|length }}
+                    </p>
+
+                    <ul class="workshop-report-list">
+                        {% for item in import_report.errors|slice:":50" %}
+                            <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+
+                    {% if import_report.errors|length > 50 %}
+                        <p>Показаны первые 50 ошибок.</p>
+                    {% endif %}
+                {% elif import_report.dry_run %}
+                    <p>Ошибок нет. Снимите галочку и загрузите файл ещё раз.</p>
+                {% endif %}
+
+                {% if import_report.warnings %}
+                    <p class="workshop-report-title">
+                        Предупреждения (загрузке не мешают): {{ import_report.warnings|length }}
+                    </p>
+
+                    <ul class="workshop-report-list">
+                        {% for item in import_report.warnings|slice:":50" %}
+                            <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+                {% endif %}
+            {% endif %}
+        </div>
+    {% endif %}

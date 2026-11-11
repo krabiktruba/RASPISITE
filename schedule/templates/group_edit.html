@@ -6,9 +6,7 @@
     <header class="daily-header page-head">
         <div class="page-head-title">
             <p class="page-head-caption">{{ group.group_name }}
-                <span class="daily-meta">
-                    {{ group.group_course }} · {{ group.shift }}
-                </span></p>
+                {% include "group_meta.html" with group=group %}</p>
             <h1>РЕДАКТОР РАСПИСАНИЯ</h1>
         </div>
 
@@ -33,14 +31,22 @@
 
     {% if not pair_options %}
         <p class="day-off">
-            У этой группы пока нет пар. Сначала создайте их в «Кузне»
-            (форма «Пары»), затем вернитесь сюда.
+            К этой группе пока не привязано ни одной пары. В «Кузне»
+            (карточка «Пары») создайте пару или откройте существующую и
+            отметьте эту группу, затем вернитесь сюда.
         </p>
     {% else %}
 
         <form method="post"
               action="{% url 'group_edit' group_id=group.group_id %}">
             {% csrf_token %}
+
+            <p class="users-hint edit-hint">
+                В списках — только пары, привязанные к группе
+                ({{ attached_count }}). Привязать другие можно в «Кузне»,
+                карточка «Пары». Если преподаватель окажется у двух групп в
+                одно время, расписание сохранится с предупреждением.
+            </p>
 
             <section class="days-grid">
                 {% for day in edit_days %}
@@ -68,7 +74,7 @@
                                             {% for pair in pair_options %}
                                                 <option value="{{ pair.pk }}"
                                                     {% if pair.pk == row.selected %}selected{% endif %}>
-                                                    {{ pair.pair_name }} — {{ pair.teacher.teacher_name }}
+                                                    {{ pair.pair_name }} — {{ pair.teacher.teacher_name }}{% if not pair.attached %} (не привязана){% endif %}
                                                 </option>
                                             {% endfor %}
                                         </select>

@@ -1,0 +1,63 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Профиль студента</p>
+            <h1>{{ student_name }}</h1>
+        </div>
+
+        <div class="page-head-actions">
+            {% if edit_url %}
+                <a class="date-nav-link" href="{{ edit_url }}">Редактировать</a>
+            {% endif %}
+            {% if group %}
+                <a class="date-nav-link" href="{% url 'group_schedule' group_id=group.pk %}">Расписание</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <dl class="profile-facts cols-4">
+        <div class="profile-fact">
+            <dt>Учится в группе</dt>
+            <dd>
+                {% if group %}
+                    <a href="{% url 'group_card' group_id=group.pk %}">{{ group.group_name }}</a>
+                {% else %}
+                    <span class="users-hint">не назначена</span>
+                {% endif %}
+            </dd>
+        </div>
+
+        <div class="profile-fact">
+            <dt>Куратор студента</dt>
+            <dd>
+                {% if curator %}
+                    <a href="{% url 'teacher_card' teacher_id=curator.pk %}">{{ curator.teacher_name }}</a>
+                {% else %}
+                    <span class="users-hint">нет</span>
+                {% endif %}
+            </dd>
+        </div>
+
+        <div class="profile-fact">
+            <dt>Курс и смена</dt>
+            <dd>
+                {% if group %}
+                    {{ group.group_course_id }} курс<span class="profile-sep">|</span>{{ group.shift_id }} смена
+                {% else %}
+                    <span class="users-hint">—</span>
+                {% endif %}
+            </dd>
+        </div>
+
+        <div class="profile-fact">
+            <dt>Почта (логин)</dt>
+            <dd>{{ student.get_username }}</dd>
+        </div>
+    </dl>
+
+</div>
+{% endblock %}

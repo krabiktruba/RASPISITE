@@ -1,0 +1,64 @@
+    <section class="users-card person-card journal-filters-card">
+        <h2>Фильтры</h2>
+
+        <form class="journal-filters" method="get" action="{{ form_action }}" data-journal-filters>
+            <input type="hidden" name="f" value="1">
+            <input type="hidden" name="date" value="{{ week_date }}">
+
+            <div class="journal-filter-row">
+                <span class="journal-filter-title">Период</span>
+                <label class="user-filter-pill journal-pill-wide">
+                    <input type="checkbox" name="week" value="1"{% if filters.week %} checked{% endif %}>
+                    <span>Одна неделя</span>
+                </label>
+                {% for number in courses %}
+                    <label class="user-filter-pill">
+                        <input type="checkbox" name="course" value="{{ number }}" data-journal-course{% if number in filters.courses %} checked{% endif %}>
+                        <span>{{ number }} курс</span>
+                    </label>
+                {% endfor %}
+            </div>
+
+            <div class="journal-filter-row">
+                <span class="journal-filter-title">Семестр</span>
+                {% for number in semesters %}
+                    <label class="user-filter-pill">
+                        <input type="checkbox" name="semester" value="{{ number }}" data-journal-semester{% if number in filters.semesters %} checked{% endif %}>
+                        <span>{{ number }} сем.</span>
+                    </label>
+                {% endfor %}
+            </div>
+
+            <div class="journal-filter-row">
+                <span class="journal-filter-title">Группы</span>
+                {% for group in groups %}
+                    <label class="user-filter-pill">
+                        <input type="checkbox" name="group" value="{{ group.pk }}"{% if group in chosen %} checked{% endif %}>
+                        <span>{{ group.group_name }}</span>
+                    </label>
+                {% empty %}
+                    <span class="users-hint">Нет доступных групп.</span>
+                {% endfor %}
+            </div>
+
+            {% if chosen %}
+                <div class="journal-filter-row">
+                    <span class="journal-filter-title">Предметы</span>
+                    {% for name in subject_options %}
+                        <label class="user-filter-pill journal-pill-wide">
+                            <input type="checkbox" name="subject" value="{{ name }}"{% if name in subjects %} checked{% endif %}>
+                            <span>{{ name }}</span>
+                        </label>
+                    {% empty %}
+                        <span class="users-hint">У выбранных групп нет предметов.</span>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+            <div class="journal-filter-actions">
+                <button class="user-filter-button" type="submit">Показать</button>
+                {% if has_filters %}<a class="date-nav-link" href="{{ reset_url }}">Сбросить</a>{% endif %}
+                <span class="users-hint">Курс и семестр вместе выбрать нельзя; при «Одной неделе» они не учитываются.</span>
+            </div>
+        </form>
+    </section>

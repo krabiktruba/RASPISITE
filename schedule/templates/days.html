@@ -1,20 +1,19 @@
 {% extends "main.html" %}
+{% load people %}
 
 {% block content %}
 <div class="schedule-page">
 
     <header class="daily-header page-head">
         <div class="page-head-title">
-            <p class="page-head-caption">
-                <span class="page-head-name">{{ group.group_name }}</span>
+            <p class="page-head-caption">Расписание группы</p>
+            <div class="page-head-line">
+                <h1><a class="page-head-link"
+                       href="{% url 'group_card' group_id=group.group_id %}"
+                       title="Профиль группы">{{ group.group_name }}</a></h1>
                 {% include "tag_chip.html" with tag=group.group_tag %}
-                <span class="daily-meta">
-                    {{ group.group_course }}
-                    ·
-                    {{ group.shift }}
-                </span>
-            </p>
-            <h1>РАСПИСАНИЕ</h1>
+                {% include "group_meta.html" with group=group %}
+            </div>
         </div>
 
         <div class="page-head-actions">
@@ -107,7 +106,7 @@
                                         {% endif %}
                                         {% if edit_mode %}
                                             <span class="pair-note">
-                                                {{ lesson.teacher }}{% if lesson.note %} · {{ lesson.note }}{% endif %}
+                                                {{ lesson.teacher|person }}{% if lesson.note %} · {{ lesson.note }}{% endif %}
                                             </span>
                                         {% endif %}
                                     {% else %}
@@ -155,7 +154,7 @@
                                 {% else %}
                                     <div class="pair-teacher">
                                         {% if lesson %}
-                                            {{ lesson.teacher }}
+                                            {{ lesson.teacher|person }}
                                             {% if lesson.note %}
                                                 <span class="pair-note">{{ lesson.note }}</span>
                                             {% endif %}
@@ -242,6 +241,18 @@
         {% endfor %}
 
     </section>
+
+    {% if group_stats %}
+        <section class="group-stats" aria-label="Сводка по группе">
+            <h2 class="group-stats-title">Сводка (видно только администратору)</h2>
+            <dl class="group-stats-list">
+                <div><dt>Пар привязано</dt><dd>{{ group_stats.attached }}</dd></div>
+                <div><dt>Занятий в неделю</dt><dd>{{ group_stats.lessons }}</dd></div>
+                <div><dt>Преподавателей</dt><dd>{{ group_stats.teachers }}</dd></div>
+                <div><dt>Привязаны, но не в расписании</dt><dd>{{ group_stats.unused }}</dd></div>
+            </dl>
+        </section>
+    {% endif %}
 
 </div>
 {% endblock %}

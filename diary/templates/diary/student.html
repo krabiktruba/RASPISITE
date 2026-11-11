@@ -1,0 +1,87 @@
+{% extends "main.html" %}
+{% load people %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Оценки и посещаемость</p>
+            <h1>ДНЕВНИК</h1>
+        </div>
+
+        {% if group_id %}
+            <div class="page-head-actions">
+                <a class="date-nav-link" href="{% url 'group_schedule' group_id=group_id %}?date={{ week_date }}">Расписание</a>
+
+                <nav class="date-nav" aria-label="Недели">
+                    <a class="date-nav-link" href="?date={{ prev_week_iso }}">← Неделя</a>
+                    <span class="date-nav-label">{{ week_label }}</span>
+                    {% if not is_current_week %}
+                        <a class="date-nav-link" href="{% url 'diary_home' %}">Сегодня</a>
+                    {% endif %}
+                    <a class="date-nav-link" href="?date={{ next_week_iso }}">Неделя →</a>
+                </nav>
+            </div>
+        {% endif %}
+    </header>
+
+    {% if not group_id %}
+
+        <section class="users-card person-card">
+            <p class="users-hint">Вы пока не состоите в группе, поэтому дневника нет. Обратитесь к администратору.</p>
+        </section>
+
+    {% else %}
+
+        <dl class="profile-facts cols-3 student-summary">
+            <div class="profile-fact">
+                <dt>Средний балл за неделю</dt>
+                <dd>{% if summary.average is not None %}{{ summary.average }}{% else %}<span class="users-hint">—</span>{% endif %}</dd>
+            </div>
+
+            <div class="profile-fact">
+                <dt>Оценок</dt>
+                <dd>{{ summary.scores }}</dd>
+            </div>
+
+            <div class="profile-fact">
+                <dt>Не был | Болел</dt>
+                <dd>{{ summary.absent }}<span class="profile-sep">|</span>{{ summary.ill }}</dd>
+            </div>
+        </dl>
+
+        {% if days %}
+            <div class="student-days">
+                {% for day in days %}
+                    <section class="student-day">
+                        <h2 class="student-day-title">{{ day.label }}</h2>
+
+                        <ul class="profile-list student-lessons">
+                            {% for lesson in day.lessons %}
+                                <li>
+                                    <span class="num">{{ lesson.number }}</span>
+                                    <span class="main">
+                                        {{ lesson.subject }}
+                                        {% if lesson.status_label %}<span class="role-badge">{{ lesson.status_label }}</span>{% endif %}
+                                        <span class="student-lesson-teacher">{{ lesson.teacher|person }}{% if lesson.note %} · {{ lesson.note }}{% endif %}</span>
+                                    </span>
+                                    <span class="student-mark{% if lesson.mark %} mark-{{ lesson.mark.kind }}{% endif %}"{% if lesson.mark %} title="{{ lesson.mark.title }}"{% endif %}>{{ lesson.mark.text }}</span>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    </section>
+                {% endfor %}
+            </div>
+
+            <p class="users-hint student-hint">«Н» — не был, «Б» — болел; пустая ячейка — оценки пока нет.</p>
+        {% else %}
+            <section class="users-card person-card">
+                <p class="users-hint">На этой неделе занятий нет.</p>
+            </section>
+        {% endif %}
+
+    {% endif %}
+
+</div>
+{% endblock %}

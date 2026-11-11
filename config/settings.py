@@ -37,7 +37,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'schedule'
+    'schedule',
+    'diary',
 ]
 
 MIDDLEWARE = [
@@ -151,8 +152,8 @@ MAILERS = {
 }
 
 
-# Тесты: таблицы приложения schedule создаются SQL-скриптом, а не миграциями,
-# поэтому в тестовой базе их нужно создать прямо из моделей. Таблицы Profile
+# Тесты: таблицы приложений schedule и diary создаются SQL-скриптами, а не
+# миграциями, поэтому в тестовой базе их нужно создать прямо из моделей. Таблицы Profile
 # и AccessCode ссылаются на auth_user, поэтому миграции отключаются у всех
 # приложений сразу: тогда Django создаёт все таблицы вместе из моделей.
 import sys
@@ -168,5 +169,6 @@ if "test" in sys.argv:
             "messages",
             "staticfiles",
             "schedule",
+            "diary",
         )
     }

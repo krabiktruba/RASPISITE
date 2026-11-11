@@ -1,0 +1,107 @@
+{% extends "main.html" %}
+{% load static %}
+{% load people %}
+
+{% block scripts %}{{ block.super }}<script src="{% static 'diary/choice.js' %}" defer></script>{% endblock %}
+
+{% block content %}
+<div class="daily-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Оценки и посещаемость</p>
+            <h1>ДНЕВНИК</h1>
+        </div>
+
+        {% if groups_total %}
+            <div class="page-head-actions">
+                <form class="diary-choice-search" method="get" action="{% url 'diary_home' %}" role="search" data-diary-choice>
+                    {% if role == ROLE_TEACHER and not is_today %}<input type="hidden" name="date" value="{{ day.isoformat }}">{% endif %}
+
+                    <span class="search-field">
+                        <input id="diary-q" type="search" name="q" value="{{ q }}"
+                               maxlength="100" autocomplete="off"
+                               aria-label="Поиск группы"
+                               placeholder="Поиск…">
+                        <button class="search-go" type="submit" aria-label="Найти" title="Найти">
+                            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false">
+                                <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/>
+                                <path d="M12.8 12.8 17.5 17.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                        </button>
+                    </span>
+
+                    <select class="diary-tag-select" name="tag" aria-label="Теги">
+                        <option value="">Все теги</option>
+                        {% for item in group_tags %}
+                            <option value="{{ item.pk }}"{% if tag and tag.pk == item.pk %} selected{% endif %}>{{ item.tag_name }}</option>
+                        {% endfor %}
+                    </select>
+
+                    {% if q or tag %}
+                        <a class="date-nav-link" href="{% url 'diary_home' %}{% if role == ROLE_TEACHER and not is_today %}?date={{ day.isoformat }}{% endif %}">Сбросить</a>
+                    {% endif %}
+                </form>
+            </div>
+        {% endif %}
+    </header>
+
+    {% if role == ROLE_TEACHER or role == ROLE_ADMIN %}
+        <nav class="diary-subnav" aria-label="Журналы">
+            <a class="date-nav-link" href="{% url 'diary_journal' %}">Журнал</a>
+            <a class="date-nav-link" href="{% url 'diary_journal_general' %}">Общий журнал</a>
+        </nav>
+    {% endif %}
+
+    {% if role == ROLE_TEACHER %}
+
+        <section class="users-card person-card">
+            <div class="diary-lessons-head">
+                <h2>Мои занятия</h2>
+
+                <nav class="date-nav" aria-label="Дни">
+                    <a class="date-nav-link" href="?date={{ prev_iso }}">← День</a>
+                    <span class="date-nav-label">{{ day_label }}</span>
+                    {% if not is_today %}
+                        <a class="date-nav-link" href="{% url 'diary_home' %}">Сегодня</a>
+                    {% endif %}
+                    <a class="date-nav-link" href="?date={{ next_iso }}">День →</a>
+                </nav>
+            </div>
+
+            {% if lessons %}
+                <ul class="diary-lessons">
+                    {% for lesson in lessons %}
+                        <li class="diary-lesson">
+                            <span class="diary-lesson-number">{{ lesson.number }}</span>
+                            <span class="diary-lesson-main">
+                                <a href="{{ lesson.url }}">{{ lesson.subject }}</a>
+                                <span class="card-list-sep">&middot;</span>
+                                {{ lesson.group.group_name }}
+                                {% if lesson.status_label %}
+                                    <span class="role-badge">{{ lesson.status_label }}</span>
+                                {% endif %}
+                            </span>
+                            <span class="diary-lesson-progress {% if lesson.marked >= lesson.students and lesson.students %}is-done{% endif %}">
+                                {% if lesson.is_future %}
+                                    ещё не было
+                                {% else %}
+                                    записей {{ lesson.marked }} из {{ lesson.students }}
+                                {% endif %}
+                            </span>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="users-hint">В этот день у вас нет занятий.</p>
+            {% endif %}
+        </section>
+
+    {% endif %}
+
+    {% if role == ROLE_TEACHER or role == ROLE_ADMIN %}
+        {% include "diary/group_choice.html" %}
+    {% endif %}
+
+</div>
+{% endblock %}

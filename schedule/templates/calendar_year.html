@@ -1,0 +1,85 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="daily-page calendar-year-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">{{ year }} год</p>
+            <h1>КАЛЕНДАРЬ</h1>
+        </div>
+
+        <div class="page-head-actions">
+            <a class="date-nav-link"
+               href="{% url 'calendar' %}?year={{ year }}&amp;month={{ month_view_month }}">
+                Месячный
+            </a>
+
+            <nav class="date-nav" aria-label="Годы">
+                {% if prev_year %}
+                    <a class="date-nav-link" href="?year={{ prev_year }}">
+                        ← {{ prev_year }}
+                    </a>
+                {% endif %}
+
+                {% if not is_current_year %}
+                    <a class="date-nav-link" href="{% url 'calendar_year' %}">
+                        Сегодня
+                    </a>
+                {% endif %}
+
+                {% if next_year %}
+                    <a class="date-nav-link" href="?year={{ next_year }}">
+                        {{ next_year }} →
+                    </a>
+                {% endif %}
+            </nav>
+        </div>
+    </header>
+
+    <div class="year-grid">
+        {% for month in months %}
+            <section class="mini-month{% if month.is_current %} is-current{% endif %}">
+                <h2>
+                    <a href="{% url 'calendar' %}?year={{ year }}&amp;month={{ month.number }}">{{ month.name }}</a>
+                </h2>
+
+                <table class="mini-table">
+                    <thead>
+                        <tr>
+                            {% for head in weekday_heads %}
+                                <th scope="col" title="{{ head.name }}">{{ head.short }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for week in month.weeks %}
+                            <tr>
+                                {% for cell in week %}
+                                    {% if cell %}
+                                        <td class="mini-cell{% if cell.is_sunday %} is-sunday{% endif %}{% if cell.is_holiday %} is-holiday{% endif %}{% if cell.is_today %} is-today{% endif %}">
+                                            <a href="{{ cell.url }}"
+                                               {% if cell.is_holiday %}title="{{ cell.holiday_name|default:'Праздничный день' }}"{% endif %}
+                                               {% if cell.is_today %}aria-current="date"{% endif %}>{{ cell.number }}</a>
+                                        </td>
+                                    {% else %}
+                                        <td class="mini-cell is-empty">&nbsp;</td>
+                                    {% endif %}
+                                {% endfor %}
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </section>
+        {% endfor %}
+    </div>
+
+    <ul class="calendar-legend">
+        <li><span class="legend-box is-today"></span> Сегодня</li>
+        <li><span class="legend-box is-holiday"></span> Праздничный день</li>
+        <li><span class="legend-box is-sunday"></span> Воскресенье</li>
+    </ul>
+
+</div>
+{% endblock %}
