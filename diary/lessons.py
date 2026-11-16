@@ -16,6 +16,7 @@ from datetime import timedelta
 from django.db.models import Count
 
 from schedule.access import own_teacher_id
+from schedule.descriptions import can_edit_description
 from schedule.changes import (
     FIRST_PAIR,
     LAST_PAIR,
@@ -27,6 +28,7 @@ from schedule.changes import (
     load_changes,
     resolve_group_day,
 )
+from schedule.weeks import load_semesters, week_filter, week_kind
 from schedule.models import (
     ROLE_STUDENT,
     Calendar,
@@ -100,7 +102,10 @@ def _describe(lesson, number, days_by_number, day):
         "group": group,
         "group_id": group.pk,
         "subject": lesson["subject"],
+        "description": lesson["description"],
+        "room": lesson["room"],
         "teacher": lesson["teacher"],
+        "pair_teacher_id": pair.teacher_id,
         "teacher_id": _actual_teacher_id(lesson, pair),
         "status": lesson["status"],
         "status_label": lesson["status_label"],
@@ -125,13 +130,17 @@ def _resolve(group_id, day, days_by_number, changes):
     return result
 
 
-def _days_by_group(group_ids, weekday_id):
-    """Постоянное расписание групп на день недели: {группа: {номер: Day}}."""
+def _days_by_group(group_ids, weekday_id, kind):
+    """Постоянное расписание групп на день недели: {группа: {номер: Day}}.
+
+    kind — верхняя или нижняя неделя (schedule.weeks.week_kind).
+    """
     result = defaultdict(dict)
 
     records = Day.objects.filter(
         group_id__in=group_ids,
         weekday_id=weekday_id,
+        week__in=week_filter(kind),
         pair_number__range=(FIRST_PAIR, LAST_PAIR),
     ).select_related("pair", "pair__teacher", "group")
 
@@ -152,11 +161,14 @@ def teacher_day_lessons(teacher_id, day):
         return []
 
     weekday_id = day.isoweekday()
+    kind = week_kind(day)
     changes = load_changes(day, day)
 
     group_ids = set(
         Day.objects.filter(
-            weekday_id=weekday_id, pair__teacher_id=teacher_id
+            weekday_id=weekday_id,
+            week__in=week_filter(kind),
+            pair__teacher_id=teacher_id,
         ).values_list("group_id", flat=True)
     )
 
@@ -170,7 +182,7 @@ def teacher_day_lessons(teacher_id, day):
     if not group_ids:
         return []
 
-    days = _days_by_group(group_ids, weekday_id)
+    days = _days_by_group(group_ids, weekday_id, kind)
     lessons = []
 
     for group_id in group_ids:
@@ -223,13 +235,11 @@ def week_lessons(group_id, monday):
     holidays = holiday_dates(monday, saturday)
     changes = load_changes(monday, saturday)
 
-    by_weekday = defaultdict(dict)
-
-    for record in Day.objects.filter(
+    records = list(Day.objects.filter(
         group_id=group_id,
         pair_number__range=(FIRST_PAIR, LAST_PAIR),
-    ).select_related("pair", "pair__teacher", "group"):
-        by_weekday[record.weekday_id][record.pair_number] = record
+    ).select_related("pair", "pair__teacher", "group"))
+    semesters = load_semesters()
 
     week = []
 
@@ -238,9 +248,14 @@ def week_lessons(group_id, monday):
         lessons = []
 
         if is_school_day(day, holidays):
-            lessons = _resolve(
-                group_id, day, by_weekday.get(day.isoweekday(), {}), changes
-            )
+            allowed = week_filter(week_kind(day, semesters))
+            slots = {
+                record.pair_number: record
+                for record in records
+                if record.weekday_id == day.isoweekday()
+                and record.week in allowed
+            }
+            lessons = _resolve(group_id, day, slots, changes)
 
         week.append((day, lessons))
 
@@ -297,3 +312,31 @@ def teacher_group_ids(teacher_id):
     )
 
     return ids
+
+
+def subject_notes(items, user):
+    """Описания предметов под таблицей: по одному на пару.
+
+    items — занятия или столбцы журнала (с pair_id, subject, description,
+    pair_teacher_id). Пара с описанием показывается всем; пара без описания
+    только тому, кто может его добавить (администратору и преподавателю пары).
+    """
+    notes = {}
+
+    for item in items:
+        pair_id = item["pair_id"]
+
+        if pair_id in notes:
+            continue
+
+        can_edit = can_edit_description(user, item["pair_teacher_id"])
+
+        if item["description"] or can_edit:
+            notes[pair_id] = {
+                "pair_id": pair_id,
+                "subject": item["subject"],
+                "description": item["description"],
+                "can_edit": can_edit,
+            }
+
+    return sorted(notes.values(), key=lambda note: (note["subject"], note["pair_id"]))

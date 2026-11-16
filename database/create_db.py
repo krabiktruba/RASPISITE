@@ -59,6 +59,7 @@ TABLES_SQL = [
         group_course SMALLINT NOT NULL,
         shift INT NOT NULL,
         group_name VARCHAR(100) NOT NULL,
+        room VARCHAR(20) NOT NULL DEFAULT '',
 
         FOREIGN KEY (group_tag)
             REFERENCES "GroupTag"(tag_id),
@@ -79,6 +80,7 @@ TABLES_SQL = [
         pair_id SERIAL PRIMARY KEY,
         teacher INT NOT NULL,
         pair_name VARCHAR(150) NOT NULL,
+        description VARCHAR(500) NOT NULL DEFAULT '',
 
         FOREIGN KEY (teacher)
             REFERENCES "Teacher"(teacher_id)
@@ -118,6 +120,10 @@ TABLES_SQL = [
         pair_id INT NOT NULL,
         pair_number INT NOT NULL,
         weekday SMALLINT NOT NULL,
+        room VARCHAR(20) NOT NULL DEFAULT '',
+        week SMALLINT NOT NULL DEFAULT 0,
+
+        CONSTRAINT day_week_range CHECK (week BETWEEN 0 AND 2),
 
         FOREIGN KEY (weekday)
         REFERENCES "Weekday"(weekday_id),
@@ -128,7 +134,12 @@ TABLES_SQL = [
         FOREIGN KEY (pair_id)
             REFERENCES "Pairs"(pair_id),
 
-        UNIQUE ("group", weekday, pair_number)
+        CONSTRAINT unique_group_weekday_pair_week
+            UNIQUE ("group", weekday, pair_number, week),
+
+        -- число пар в день: schedule/limits.py
+        CONSTRAINT day_pair_number_range
+            CHECK (pair_number BETWEEN 1 AND 4)
     );
     """,
 
@@ -156,7 +167,10 @@ TABLES_SQL = [
 
         UNIQUE (shift, pair_number),
 
-        CHECK (pair_start_time < pair_end_time)
+        CHECK (pair_start_time < pair_end_time),
+
+        CONSTRAINT study_hours_pair_number_range
+            CHECK (pair_number BETWEEN 1 AND 4)
     );
     """,
 
@@ -166,11 +180,33 @@ TABLES_SQL = [
         semester_number SMALLINT NOT NULL UNIQUE,
         start_date DATE NOT NULL,
         end_date DATE NOT NULL,
+        swap_weeks BOOLEAN NOT NULL DEFAULT FALSE,
 
         CONSTRAINT semester_number_range
             CHECK (semester_number BETWEEN 1 AND 8),
 
         CONSTRAINT semester_dates_order CHECK (end_date >= start_date)
+    );
+    """,
+
+    """
+    CREATE TABLE IF NOT EXISTS "Duty" (
+        duty_id SERIAL PRIMARY KEY,
+        shift INT NOT NULL,
+        weekday SMALLINT NOT NULL,
+        teacher_id INT NOT NULL,
+
+        FOREIGN KEY (shift)
+            REFERENCES "Shift"(shift_id) ON DELETE CASCADE,
+
+        FOREIGN KEY (teacher_id)
+            REFERENCES "Teacher"(teacher_id) ON DELETE CASCADE,
+
+        CONSTRAINT unique_duty_shift_weekday_teacher
+            UNIQUE (shift, weekday, teacher_id),
+
+        CONSTRAINT duty_weekday_range
+            CHECK (weekday BETWEEN 1 AND 6)
     );
     """,
 
@@ -187,7 +223,10 @@ TABLES_SQL = [
 
         UNIQUE (shift, break_number),
 
-        CHECK (break_start_time < break_end_time)
+        CHECK (break_start_time < break_end_time),
+
+        CONSTRAINT break_hours_number_range
+            CHECK (break_number BETWEEN 1 AND 3)
     );
     """,
 

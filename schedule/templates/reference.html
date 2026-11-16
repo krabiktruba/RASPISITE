@@ -1,0 +1,92 @@
+{% extends "main.html" %}
+
+{% block content %}
+
+<div class="daily-page reference-page">
+
+    <header class="daily-header page-head">
+        <div class="page-head-title">
+            <p class="page-head-caption">Общее</p>
+            <div class="page-head-line">
+                <h1>СПРАВОЧНИК</h1>
+            </div>
+        </div>
+
+        <div class="page-head-actions">
+            <nav class="ref-tabs" aria-label="Разделы справочника">
+                {% for key, label in tabs %}
+                    <a class="ref-tab{% if key == tab %} is-current{% endif %}"
+                       href="?tab={{ key }}"
+                       {% if key == tab %}aria-current="page"{% endif %}>{{ label }}</a>
+                {% endfor %}
+            </nav>
+        </div>
+    </header>
+
+    <section class="ref-card" data-filter>
+
+        <div class="ref-tools">
+            <label class="ref-search" for="ref-search">
+                <span class="ref-search-title">Поиск</span>
+                <input id="ref-search" type="search" autocomplete="off"
+                       placeholder="Найти в разделе «{{ tab_label }}»…"
+                       data-filter-input>
+            </label>
+
+            <p class="ref-count">
+                Записей: <span data-filter-count>{{ rows|length }}</span>
+            </p>
+        </div>
+
+        <div class="ref-scroll">
+            <table class="ref-table" data-sortable>
+                <thead>
+                    <tr>
+                        {% for column in columns %}
+                            <th scope="col"
+                                data-sort="{% if column.number %}number{% else %}text{% endif %}"
+                                aria-sort="none" tabindex="0"
+                                title="Нажмите, чтобы отсортировать">
+                                <span>{{ column.label }}</span>
+                            </th>
+                        {% endfor %}
+                        {% if can_edit %}
+                            <th scope="col" class="ref-edit-head"><span class="visually-hidden">Изменить</span></th>
+                        {% endif %}
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for row in rows %}
+                        <tr data-filter-item data-filter-text="{{ row.search }}">
+                            {% for cell in row.cells %}
+                                <td data-sort-value="{{ cell.sort }}"{% if cell.title %} title="{{ cell.title }}"{% endif %}>
+                                    {% if cell.url and cell.text %}
+                                        <a href="{{ cell.url }}">{{ cell.text }}</a>
+                                    {% else %}
+                                        {{ cell.text|default:"—" }}
+                                    {% endif %}
+                                </td>
+                            {% endfor %}
+                            {% if can_edit %}
+                                <td class="ref-edit">
+                                    {% if row.edit_url %}
+                                        <a href="{{ row.edit_url }}">Изменить</a>
+                                    {% endif %}
+                                </td>
+                            {% endif %}
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <p class="ref-empty" data-filter-empty{% if rows %} hidden{% endif %}>
+            {% if rows %}Ничего не найдено{% else %}В этом разделе пока пусто{% endif %}
+        </p>
+
+    </section>
+
+</div>
+
+{% endblock %}

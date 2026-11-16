@@ -4,13 +4,16 @@
 записи для выбора, находит нужную, проверяет, можно ли её удалить, и
 готовит предупреждение о том, что удалится вместе с ней.
 
-Пять разделов Кузни: теги групп, теги преподавателей, группы, пары и семестры
+Шесть разделов Кузни: теги групп, теги преподавателей, группы, пары, семестры
+и дежурные
 (преподавателей добавляют на странице «Пользователи»).
 """
 
 from .dates import WEEKDAY_NAMES
+from .weeks import compatible as weeks_compatible
 from .models import (
     Day,
+    Duty,
     Group,
     GroupTag,
     Pair,
@@ -22,7 +25,7 @@ from .models import (
     TeacherTag,
 )
 
-EDIT_KEYS = ("group_tag", "teacher_tag", "group", "pair", "semester")
+EDIT_KEYS = ("group_tag", "teacher_tag", "group", "pair", "semester", "duty")
 
 # Разделы-теги: у каждого своя таблица
 TAG_MODELS = {"group_tag": GroupTag, "teacher_tag": TeacherTag}
@@ -40,6 +43,11 @@ def _queryset(key):
 
     if key == "semester":
         return Semester.objects.order_by("semester_number")
+
+    if key == "duty":
+        return Duty.objects.select_related("teacher").order_by(
+            "weekday", "shift_id", "teacher__teacher_name", "duty_id"
+        )
 
     return Pair.objects.select_related("teacher").order_by(
         "pair_name", "teacher__teacher_name", "pair_id"
@@ -63,6 +71,13 @@ def item_label(key, obj):
         return (
             f"{obj.semester_number} семестр · "
             f"{obj.start_date:%d.%m.%Y} — {obj.end_date:%d.%m.%Y}"
+            + (" · 1-я неделя нижняя" if obj.swap_weeks else "")
+        )
+
+    if key == "duty":
+        return (
+            f"{WEEKDAY_NAMES.get(obj.weekday, obj.weekday)} · "
+            f"{obj.shift_id} смена · {obj.teacher.teacher_name}"
         )
 
     return f"{obj.pair_name} · {obj.teacher.teacher_name}"
@@ -120,6 +135,9 @@ def delete_warning(key, obj):
     if key == "semester":
         return "Оценки и расписание не удаляются: пропадёт только период."
 
+    if key == "duty":
+        return "Удалится только это дежурство, расписание не меняется."
+
     if key == "group":
         removed = _parts([
             ("занятия в расписании", Day.objects.filter(group=obj).count()),
@@ -165,11 +183,17 @@ def pair_teacher_conflict(pair, teacher):
     предупреждение: изменение всё равно сохраняется.
     """
     for slot in Day.objects.filter(pair=pair):
-        other = Day.objects.filter(
-            weekday_id=slot.weekday_id,
-            pair_number=slot.pair_number,
-            pair__teacher=teacher,
-        ).exclude(pair=pair).select_related("group").first()
+        other = next(
+            (
+                day for day in Day.objects.filter(
+                    weekday_id=slot.weekday_id,
+                    pair_number=slot.pair_number,
+                    pair__teacher=teacher,
+                ).exclude(pair=pair).select_related("group")
+                if weeks_compatible(slot.week, day.week)
+            ),
+            None,
+        )
 
         if other is not None:
             weekday = WEEKDAY_NAMES.get(slot.weekday_id, slot.weekday_id)

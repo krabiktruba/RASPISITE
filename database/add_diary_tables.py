@@ -57,7 +57,7 @@ TABLES_SQL = [
         ),
 
         CONSTRAINT diary_mark_pair_number
-            CHECK (pair_number BETWEEN 1 AND 6)
+            CHECK (pair_number BETWEEN 1 AND 4)
     );
     """,
 

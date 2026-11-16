@@ -10,8 +10,12 @@ from django.core.exceptions import ValidationError
 from django.db.models import Q
 
 from .access import create_account, real_teachers
+from .dates import WEEKDAY_NAMES
+from .descriptions import clean_description
 from .group_names import FORMAT_HINT, check_group_name, is_standard_name
 from .gmail import MAX_ADDRESS_LENGTH, normalize_gmail
+from .limits import DESCRIPTION_MAX, ROOM_MAX
+from .rooms import clean_room, conflict_text, group_room_conflict
 from .tags import TAG_COLOR_DEFAULT, normalize_color
 from .models import (
     ROLE_STUDENT,
@@ -24,11 +28,13 @@ from .models import (
     Semester,
     Day,
     Course,
+    Duty,
     Shift,
     BreakHours,
 )
 
 FIELD_LABELS = {
+    "swap_weeks": "Первая неделя — нижняя",
     "tag_name": "Название тега",
     "tag_color": "Цвет тега",
     "teacher_tag": "Тег преподавателя",
@@ -39,6 +45,8 @@ FIELD_LABELS = {
     "group_name": "Название группы",
     "shift": "Смена",
     "pair_name": "Название предмета",
+    "description": "Описание предмета",
+    "room": "Кабинет",
     "semester_number": "Семестр",
     "start_date": "Начало",
     "end_date": "Конец",
@@ -193,12 +201,21 @@ class GroupForm(WorkshopFormMixin, forms.ModelForm):
             "group_name",
             "group_course",
             "shift",
+            "room",
             "group_tag",
             "group_curator",
         )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self.fields["room"].widget.attrs.update({
+            "placeholder": "204",
+            "maxlength": ROOM_MAX,
+        })
+        self.fields["room"].help_text = (
+            "Обычный кабинет группы. Необязательно."
+        )
 
         self.fields["group_name"].widget.attrs.update({
             "placeholder": "ПО-107",
@@ -225,8 +242,13 @@ class GroupForm(WorkshopFormMixin, forms.ModelForm):
             free
         ).order_by("teacher_name", "teacher_id")
 
+    def clean_room(self):
+        return clean_room(self.cleaned_data.get("room"))
+
     def clean(self):
         cleaned = super().clean()
+        self._check_room(cleaned)
+
         name = (cleaned.get("group_name") or "").strip()
         course = cleaned.get("group_course")
 
@@ -251,13 +273,31 @@ class GroupForm(WorkshopFormMixin, forms.ModelForm):
 
         return cleaned
 
+    def _check_room(self, cleaned):
+        room = cleaned.get("room")
+        shift = cleaned.get("shift")
+
+        if not room or shift is None or "room" in self.errors:
+            return
+
+        other = group_room_conflict(room, shift.pk, self.instance.pk)
+
+        if other is not None:
+            self.add_error("room", conflict_text(room, other))
+
 
 class SemesterForm(WorkshopFormMixin, forms.ModelForm):
     """Семестр: номер и даты. Интервалы разных семестров не пересекаются."""
 
     class Meta:
         model = Semester
-        fields = ("semester_number", "start_date", "end_date")
+        fields = ("semester_number", "start_date", "end_date", "swap_weeks")
+        help_texts = {
+            "swap_weeks": (
+                "Первая неделя семестра по умолчанию верхняя. Отметьте, "
+                "если у вас она нижняя."
+            ),
+        }
         widgets = {
             "start_date": forms.DateInput(
                 attrs={"type": "date"}, format="%Y-%m-%d"
@@ -307,7 +347,13 @@ class PairForm(WorkshopFormMixin, forms.ModelForm):
 
     class Meta:
         model = Pair
-        fields = ("pair_name", "teacher")
+        fields = ("pair_name", "teacher", "description")
+        widgets = {
+            "description": forms.Textarea(attrs={
+                "rows": 4,
+                "maxlength": DESCRIPTION_MAX,
+            }),
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -328,8 +374,13 @@ class PairForm(WorkshopFormMixin, forms.ModelForm):
                 self.instance.groups.values_list("pk", flat=True)
             )
 
-        # Порядок полей: название, преподаватель, группы
-        self.order_fields(("pair_name", "teacher", "groups"))
+        self.fields["description"].help_text = (
+            f"Необязательно, до {DESCRIPTION_MAX} знаков: показывается в "
+            "подсказке расписания и в журнале."
+        )
+
+        # Порядок полей: название, преподаватель, описание, группы
+        self.order_fields(("pair_name", "teacher", "description", "groups"))
 
     def clean_pair_name(self):
         name = " ".join((self.cleaned_data.get("pair_name") or "").split())
@@ -338,6 +389,9 @@ class PairForm(WorkshopFormMixin, forms.ModelForm):
             raise ValidationError("Введите название предмета.")
 
         return name
+
+    def clean_description(self):
+        return clean_description(self.cleaned_data.get("description"))
 
     def clean_groups(self):
         chosen = self.cleaned_data.get("groups")
@@ -604,6 +658,39 @@ def _failures_key(request, email):
     return "login-failures:" + hashlib.sha256(raw).hexdigest()
 
 
+# Кроме пары «адрес + почта» неудачи считаются отдельно на почту (подбор
+# пароля с разных адресов) и на адрес (перебор многих почт с одного адреса).
+# Пороги выше, чем у пары, чтобы чужие попытки не закрывали вход хозяину
+MAX_FAILED_PER_EMAIL = 20
+MAX_FAILED_PER_IP = 50
+
+
+def _wide_keys(request, email):
+    """(ключ, предел) для счётчиков на почту и на адрес."""
+    def digest(text):
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    return (
+        (
+            "login-failures-email:" + digest(email),
+            MAX_FAILED_PER_EMAIL,
+        ),
+        (
+            "login-failures-ip:" + digest(_client_ip(request)),
+            MAX_FAILED_PER_IP,
+        ),
+    )
+
+
+def _count_failure(key):
+    cache.add(key, 0, LOGIN_LOCK_SECONDS)
+
+    try:
+        cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, LOGIN_LOCK_SECONDS)
+
+
 class GmailLoginForm(AuthenticationForm):
     """Вход по почте Gmail и паролю.
 
@@ -644,8 +731,11 @@ class GmailLoginForm(AuthenticationForm):
             return self.cleaned_data
 
         key = _failures_key(self.request, email)
+        wide = _wide_keys(self.request, email)
 
-        if cache.get(key, 0) >= MAX_FAILED_LOGINS:
+        if cache.get(key, 0) >= MAX_FAILED_LOGINS or any(
+            cache.get(wide_key, 0) >= limit for wide_key, limit in wide
+        ):
             raise ValidationError(
                 self.error_messages["locked"], code="locked"
             )
@@ -653,17 +743,268 @@ class GmailLoginForm(AuthenticationForm):
         try:
             cleaned = super().clean()
         except ValidationError:
-            cache.add(key, 0, LOGIN_LOCK_SECONDS)
+            _count_failure(key)
 
-            try:
-                cache.incr(key)
-            except ValueError:
-                cache.set(key, 1, LOGIN_LOCK_SECONDS)
+            for wide_key, _limit in wide:
+                _count_failure(wide_key)
 
             raise
 
-        # Пустой пароль вход не подтверждает и счётчик не сбрасывает
+        # Пустой пароль вход не подтверждает и счётчик не сбрасывает.
+        # Успешный вход снимает счётчики пары и почты, но не адреса
         if self.user_cache is not None:
             cache.delete(key)
+            cache.delete(wide[0][0])
+
+        return cleaned
+
+
+class UserEditForm(forms.Form):
+    """Правка пользователя в строке списка: ФИО, почта и доступ.
+
+    Роль, группа и тег меняются отдельной кнопкой строки. Почта проверяется
+    как при создании, но если она не менялась, прежний логин остаётся как
+    есть (у старых учётных записей он может быть не Gmail). Свой доступ и
+    доступ суперпользователя отключить нельзя.
+    """
+
+    last_name = forms.CharField(
+        label="Фамилия", max_length=MAX_NAME_PART,
+        widget=forms.TextInput(attrs={"autocomplete": "off"}),
+    )
+    first_name = forms.CharField(
+        label="Имя", max_length=MAX_NAME_PART,
+        widget=forms.TextInput(attrs={"autocomplete": "off"}),
+    )
+    patronymic = forms.CharField(
+        label="Отчество", max_length=MAX_NAME_PART, required=False,
+        widget=forms.TextInput(attrs={"autocomplete": "off"}),
+    )
+    username = forms.CharField(
+        label="Почта (логин)", max_length=MAX_ADDRESS_LENGTH,
+        widget=forms.TextInput(attrs={
+            "autocomplete": "off",
+            "autocapitalize": "none",
+            "placeholder": "name@gmail.com",
+        }),
+    )
+    is_active = forms.BooleanField(label="Доступ открыт", required=False)
+
+    def __init__(self, target, *args, can_disable=True, **kwargs):
+        self.target = target
+        super().__init__(*args, **kwargs)
+
+        if not can_disable:
+            self.fields["is_active"].disabled = True
+            self.fields["is_active"].initial = target.is_active
+
+    def clean_last_name(self):
+        return _name_part(self.cleaned_data["last_name"], "Фамилия", True)
+
+    def clean_first_name(self):
+        return _name_part(self.cleaned_data["first_name"], "Имя", True)
+
+    def clean_patronymic(self):
+        return _name_part(
+            self.cleaned_data.get("patronymic"), "Отчество", False
+        )
+
+    def clean_username(self):
+        raw = (self.cleaned_data["username"] or "").strip()
+
+        if raw == self.target.get_username():
+            return raw
+
+        username = normalize_gmail(raw)
+
+        if get_user_model().objects.filter(
+            username__iexact=username
+        ).exclude(pk=self.target.pk).exists():
+            raise ValidationError("Такой логин уже занят.")
+
+        return username
+
+    def clean(self):
+        cleaned = super().clean()
+        parts = [
+            cleaned.get("last_name"),
+            cleaned.get("first_name"),
+            cleaned.get("patronymic"),
+        ]
+
+        if len(" ".join(part for part in parts if part)) > MAX_FULL_NAME:
+            self.add_error(
+                None,
+                f"ФИО слишком длинное (не больше {MAX_FULL_NAME} знаков).",
+            )
+
+        return cleaned
+
+
+class RegistrationForm(forms.Form):
+    """Самостоятельная регистрация студента.
+
+    ФИО, почта Gmail (она же логин), пароль два раза и группа. Аккаунт
+    создаётся только после подтверждения почты кодом (schedule/registration.py).
+    """
+
+    last_name = forms.CharField(
+        label="Фамилия", max_length=MAX_NAME_PART,
+        widget=forms.TextInput(attrs={
+            "autocomplete": "family-name", "autofocus": True,
+        }),
+    )
+    first_name = forms.CharField(
+        label="Имя", max_length=MAX_NAME_PART,
+        widget=forms.TextInput(attrs={"autocomplete": "given-name"}),
+    )
+    patronymic = forms.CharField(
+        label="Отчество", max_length=MAX_NAME_PART, required=False,
+        widget=forms.TextInput(attrs={"autocomplete": "additional-name"}),
+    )
+    username = forms.CharField(
+        label="Почта Gmail", max_length=MAX_ADDRESS_LENGTH,
+        widget=forms.EmailInput(attrs={
+            "autocomplete": "username",
+            "autocapitalize": "none",
+            "spellcheck": "false",
+            "placeholder": "name@gmail.com",
+        }),
+    )
+    group = forms.ModelChoiceField(
+        label="Группа", queryset=Group.objects.none(),
+        empty_label="— Выберите группу —",
+        error_messages={"required": "Выберите свою группу."},
+    )
+    password = forms.CharField(
+        label="Пароль", strip=False,
+        widget=forms.PasswordInput(attrs={"autocomplete": "new-password"}),
+    )
+    password2 = forms.CharField(
+        label="Пароль ещё раз", strip=False,
+        widget=forms.PasswordInput(attrs={"autocomplete": "new-password"}),
+    )
+
+    field_order = (
+        "last_name", "first_name", "patronymic", "username",
+        "group", "password", "password2",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["group"].queryset = Group.objects.order_by(
+            "group_name", "group_id"
+        )
+
+    def clean_last_name(self):
+        return _name_part(self.cleaned_data["last_name"], "Фамилия", True)
+
+    def clean_first_name(self):
+        return _name_part(self.cleaned_data["first_name"], "Имя", True)
+
+    def clean_patronymic(self):
+        return _name_part(
+            self.cleaned_data.get("patronymic"), "Отчество", False
+        )
+
+    def clean_username(self):
+        username = normalize_gmail(self.cleaned_data["username"])
+
+        if get_user_model().objects.filter(
+            username__iexact=username
+        ).exists():
+            raise ValidationError(
+                "Эта почта уже зарегистрирована. Попробуйте войти."
+            )
+
+        return username
+
+    def clean(self):
+        cleaned = super().clean()
+        parts = [
+            cleaned.get("last_name"),
+            cleaned.get("first_name"),
+            cleaned.get("patronymic"),
+        ]
+
+        if len(" ".join(part for part in parts if part)) > MAX_FULL_NAME:
+            self.add_error(
+                None,
+                f"ФИО слишком длинное (не больше {MAX_FULL_NAME} знаков).",
+            )
+
+        password = cleaned.get("password")
+        again = cleaned.get("password2")
+
+        if password and again is not None and password != again:
+            self.add_error("password2", "Пароли не совпадают.")
+
+        elif password:
+            candidate = get_user_model()(
+                username=cleaned.get("username") or "",
+                first_name=cleaned.get("first_name") or "",
+                last_name=cleaned.get("last_name") or "",
+            )
+
+            try:
+                validate_password(password, candidate)
+            except ValidationError as exc:
+                self.add_error("password", exc)
+
+        return cleaned
+
+
+class DutyForm(WorkshopFormMixin, forms.ModelForm):
+    """Дежурный: смена, день недели и преподаватель (без чётности недель)."""
+
+    weekday = forms.TypedChoiceField(
+        label="День недели",
+        coerce=int,
+        choices=[("", "— Выберите —")] + [
+            (number, WEEKDAY_NAMES[number]) for number in range(1, 7)
+        ],
+    )
+
+    class Meta:
+        model = Duty
+        fields = ("shift", "weekday", "teacher")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.fields["weekday"].label = "День недели"
+        # Прежний дежурный остаётся в списке, даже если у него нет учётной
+        # записи: сохранение не должно менять его молча
+        allowed = Q(pk__in=real_teachers().values("pk"))
+
+        if self.instance.pk:
+            allowed |= Q(pk=self.instance.teacher_id)
+
+        self.fields["teacher"].queryset = Teacher.objects.filter(
+            allowed
+        ).order_by("teacher_name", "teacher_id")
+        self.fields["teacher"].label_from_instance = self.choice_label
+
+    def clean(self):
+        cleaned = super().clean()
+        shift = cleaned.get("shift")
+        weekday = cleaned.get("weekday")
+        teacher = cleaned.get("teacher")
+
+        if shift is None or not weekday or teacher is None:
+            return cleaned
+
+        same = Duty.objects.filter(
+            shift=shift, weekday=weekday, teacher=teacher
+        )
+
+        if self.instance.pk:
+            same = same.exclude(pk=self.instance.pk)
+
+        if same.exists():
+            raise ValidationError(
+                f"{teacher.teacher_name} уже дежурит в этот день "
+                f"({WEEKDAY_NAMES[weekday]}, {shift.pk} смена)."
+            )
 
         return cleaned

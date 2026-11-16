@@ -1,4 +1,5 @@
 {% extends "main.html" %}
+{% load people %}
 
 {% block content %}
 <div class="daily-page calendar-page">
@@ -54,7 +55,7 @@
                     {% for cell in week %}
                         <td class="calendar-cell{% if not cell.in_month %} is-other{% endif %}{% if cell.is_sunday %} is-sunday{% endif %}{% if cell.is_holiday %} is-holiday{% endif %}{% if cell.is_today %} is-today{% endif %}">
                             <a href="{{ cell.url }}"
-                               {% if cell.is_holiday %}title="{{ cell.holiday_name|default:'Праздничный день' }}"{% endif %}
+                               {% if cell.is_holiday %}title="{{ cell.holiday_name|default:'Праздничный день' }}"{% elif cell.duty_title %}title="Дежурные. {{ cell.duty_title }}"{% endif %}
                                {% if cell.is_today %}aria-current="date"{% endif %}>
                                 <span class="calendar-number">{{ cell.number }}</span>
                                 {% if cell.is_holiday %}
@@ -75,6 +76,35 @@
         <li><span class="legend-box is-holiday"></span> Праздничный день</li>
         <li><span class="legend-box is-sunday"></span> Воскресенье</li>
     </ul>
+
+    {% if duty_rows %}
+        <section class="calendar-duty">
+            <h2>Дежурные преподаватели</h2>
+            <p class="users-hint">Повторяется каждую неделю. Менять дежурных можно в «Кузне».</p>
+            <div class="duty-table-wrap">
+                <table class="duty-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">День</th>
+                            {% for shift_id in duty_shifts %}
+                                <th scope="col">{{ shift_id }} смена</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in duty_rows %}
+                            <tr>
+                                <th scope="row">{{ row.name }}</th>
+                                {% for teachers in row.cells %}
+                                    <td>{% for teacher in teachers %}{{ teacher.teacher_name|person }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</td>
+                                {% endfor %}
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    {% endif %}
 
     {% if month_holidays %}
         <section class="calendar-holidays">

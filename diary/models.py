@@ -13,6 +13,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
+from schedule.limits import FIRST_PAIR, LAST_PAIR, pair_range_text
 from schedule.models import Pair, Teacher
 
 MARK_SCORE = "score"
@@ -33,8 +34,8 @@ MARK_SHORT = {
 
 MIN_SCORE = 0
 MAX_SCORE = 100
-FIRST_PAIR_NUMBER = 1
-LAST_PAIR_NUMBER = 6
+FIRST_PAIR_NUMBER = FIRST_PAIR
+LAST_PAIR_NUMBER = LAST_PAIR
 
 
 class Mark(models.Model):
@@ -131,7 +132,7 @@ class Mark(models.Model):
     def clean(self):
         if not FIRST_PAIR_NUMBER <= (self.pair_number or 0) <= LAST_PAIR_NUMBER:
             raise ValidationError(
-                {"pair_number": "Номер пары должен быть от 1 до 6."}
+                {"pair_number": f"Номер пары должен быть {pair_range_text()}."}
             )
 
         if self.kind == MARK_SCORE:

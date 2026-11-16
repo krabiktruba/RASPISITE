@@ -17,6 +17,8 @@
         </div>
 
         <div class="page-head-actions">
+            {% include "mode_switch.html" %}
+
             {% if user.is_staff %}
                 {% if edit_mode %}
                     <a class="date-nav-link edit-link"
@@ -82,6 +84,51 @@
                         {% for pair in day.pairs %}
 
                             {% with lesson=pair.lesson %}
+                            {% if pair.halves %}
+                            <div class="pair pair-split{% if edit_mode %} has-actions{% endif %}">
+
+                                <div class="pair-number">{{ pair.number }}</div>
+
+                                <div class="pair-time">
+                                    {% if pair.time %}
+                                        {{ pair.time.pair_start_time|time:"H:i" }}
+                                        -
+                                        {{ pair.time.pair_end_time|time:"H:i" }}
+                                    {% else %}
+                                        &nbsp;
+                                    {% endif %}
+                                </div>
+
+                                <div class="pair-halves">
+                                    {% for half in pair.halves %}
+                                        <div class="pair-half{% if half.current %} is-current-week{% endif %}{% if half.current and half.lesson.status %} is-{{ half.lesson.status }}{% endif %}">
+                                            <span class="week-tag{% if half.current %} is-current{% endif %}"{% if half.current %} title="Идёт на этой неделе"{% endif %}>{{ half.label }}</span>
+                                            <div class="pair-name{% if half.lesson.description %} has-description{% endif %}"{% if half.lesson.description %} title="{{ half.lesson.description }}"{% endif %}>
+                                                {% if half.lesson %}
+                                                    {{ half.lesson.subject }}
+                                                    {% if half.lesson.status_label %}
+                                                        <span class="status-badge status-{{ half.lesson.status }}">{{ half.lesson.status_label }}</span>
+                                                    {% endif %}
+                                                {% else %}
+                                                    <span class="pair-window">окно</span>
+                                                {% endif %}
+                                            </div>
+                                            {% if half.lesson %}
+                                                <div class="pair-teacher">
+                                                    {{ half.lesson.teacher|person }}
+                                                    {% if half.lesson.room %}<span class="pair-room">{{ half.lesson.room|room_label }}</span>{% endif %}
+                                                    {% if half.lesson.note %}<span class="pair-note">{{ half.lesson.note }}</span>{% endif %}
+                                                </div>
+                                            {% endif %}
+                                            {% if edit_mode and half.current %}
+                                                {% include "pair_actions.html" %}
+                                            {% endif %}
+                                        </div>
+                                    {% endfor %}
+                                </div>
+
+                            </div>
+                            {% else %}
                             <div class="pair{% if lesson.status %} is-{{ lesson.status }}{% endif %}{% if edit_mode %} has-actions{% endif %}">
 
                                 <div class="pair-number">
@@ -98,7 +145,7 @@
                                     {% endif %}
                                 </div>
 
-                                <div class="pair-name">
+                                <div class="pair-name{% if lesson.description %} has-description{% endif %}"{% if lesson.description %} title="{{ lesson.description }}"{% endif %}>
                                     {% if lesson %}
                                         {{ lesson.subject }}
                                         {% if lesson.status_label %}
@@ -106,7 +153,7 @@
                                         {% endif %}
                                         {% if edit_mode %}
                                             <span class="pair-note">
-                                                {{ lesson.teacher|person }}{% if lesson.note %} · {{ lesson.note }}{% endif %}
+                                                {{ lesson.teacher|person }}{% if lesson.room %} · {{ lesson.room|room_label }}{% endif %}{% if lesson.note %} · {{ lesson.note }}{% endif %}
                                             </span>
                                         {% endif %}
                                     {% else %}
@@ -115,46 +162,12 @@
                                 </div>
 
                                 {% if edit_mode %}
-                                    <div class="pair-actions">
-                                        {% if lesson and lesson.editable %}
-                                            <a class="square-button{% if edit_form and edit_form.act == 'move' and edit_form.slot == day.iso and edit_form.number == pair.number %} is-active{% endif %}"
-                                               href="?date={{ selected_date_iso }}&amp;edit=1&amp;act=move&amp;slot={{ day.iso }}&amp;number={{ pair.number }}"
-                                               title="Перенос: пара уйдёт на другую дату и номер"
-                                               aria-label="Перенос пары {{ pair.number }}">⇄</a>
-
-                                            <form method="post"
-                                                  action="{% url 'group_change' group_id=group.group_id %}">
-                                                {% csrf_token %}
-                                                <input type="hidden" name="kind" value="cancel">
-                                                <input type="hidden" name="date" value="{{ day.iso }}">
-                                                <input type="hidden" name="number" value="{{ pair.number }}">
-                                                <button class="square-button is-danger" type="submit"
-                                                        title="Отмена: пары в этот день не будет"
-                                                        aria-label="Отмена пары {{ pair.number }}">✕</button>
-                                            </form>
-
-                                            <a class="square-button{% if edit_form and edit_form.act == 'replace' and edit_form.slot == day.iso and edit_form.number == pair.number %} is-active{% endif %}"
-                                               href="?date={{ selected_date_iso }}&amp;edit=1&amp;act=replace&amp;slot={{ day.iso }}&amp;number={{ pair.number }}"
-                                               title="Замена: другой преподаватель или название"
-                                               aria-label="Замена пары {{ pair.number }}">↻</a>
-
-                                            <form method="post"
-                                                  action="{% url 'group_change' group_id=group.group_id %}">
-                                                {% csrf_token %}
-                                                <input type="hidden" name="kind" value="restore">
-                                                <input type="hidden" name="date" value="{{ day.iso }}">
-                                                <input type="hidden" name="number" value="{{ pair.number }}">
-                                                <button class="square-button is-restore" type="submit"
-                                                        {% if not lesson.change %}disabled{% endif %}
-                                                        title="Сброс: вернуть пару как в основном расписании"
-                                                        aria-label="Сброс пары {{ pair.number }}">↩</button>
-                                            </form>
-                                        {% endif %}
-                                    </div>
+                                    {% include "pair_actions.html" %}
                                 {% else %}
                                     <div class="pair-teacher">
                                         {% if lesson %}
                                             {{ lesson.teacher|person }}
+                                            {% if lesson.room %}<span class="pair-room">{{ lesson.room|room_label }}</span>{% endif %}
                                             {% if lesson.note %}
                                                 <span class="pair-note">{{ lesson.note }}</span>
                                             {% endif %}
@@ -165,6 +178,8 @@
                                 {% endif %}
 
                             </div>
+
+                            {% endif %}
 
                             {% if edit_form and edit_form.slot == day.iso and edit_form.number == pair.number %}
                                 <div class="change-inline">

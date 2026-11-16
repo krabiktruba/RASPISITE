@@ -70,6 +70,8 @@ def student_week(student, group_id, monday):
             rows.append({
                 "number": lesson["number"],
                 "subject": lesson["subject"],
+                "description": lesson["description"],
+                "room": lesson["room"],
                 "teacher": lesson["teacher"],
                 "note": lesson["note"],
                 "status_label": lesson["status_label"],

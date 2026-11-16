@@ -1,5 +1,5 @@
 import re
-from datetime import date, time
+from datetime import date, time, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -9,15 +9,16 @@ from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.messages import constants as message_levels
 from django.contrib.messages import get_messages
+from django.core import mail
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
-from django.urls import NoReverseMatch, reverse
+from django.urls import reverse
 from django.utils import timezone
 
 from diary.models import Mark
@@ -32,6 +33,7 @@ from .access import (
     set_role,
     user_role,
 )
+from . import registration as reg
 from .forms import MAX_FAILED_LOGINS
 from .group_names import check_group_name, is_standard_name
 from .names import person_html, short_name, split_name
@@ -50,6 +52,7 @@ from .models import (
     Calendar,
     Course,
     Day,
+    Duty,
     Group,
     Pair,
     PairGroup,
@@ -392,30 +395,12 @@ class LoginTests(TestCase):
         self.assertContains(page, "Почта Gmail")
         self.assertContains(page, 'type="email"')
 
-    def test_no_registration(self):
+    def test_login_page_links_to_registration(self):
         page = self.client.get(reverse("login"))
 
-        self.assertNotContains(page, "Регистрация")
-        self.assertNotContains(page, "Создать аккаунт")
-        self.assertNotContains(page, "/register/")
-
-        with self.assertRaises(NoReverseMatch):
-            reverse("register")
-
-        self.assertEqual(self.client.get("/register/").status_code, 404)
-        self.assertEqual(
-            self.client.post("/register/", {
-                "username": "newbie77@gmail.com",
-                "password1": PASSWORD,
-                "password2": PASSWORD,
-            }).status_code,
-            404,
-        )
-        self.assertFalse(
-            get_user_model().objects.filter(
-                username="newbie77@gmail.com"
-            ).exists()
-        )
+        self.assertContains(page, reverse("register"))
+        self.assertContains(page, "Зарегистрироваться")
+        self.assertNotContains(page, "Регистрации нет")
 
     def test_logged_in_user_skips_login_page(self):
         self.client.force_login(self.user)
@@ -1441,7 +1426,9 @@ class StudentGroupTests(BaseTestCase):
 
         page = self.client.get(reverse("groups"))
 
-        self.assertNotContains(page, "Моё расписание")
+        # Кнопка есть всегда, но без группы ведёт на «Группы на сегодня»
+        self.assertContains(page, "Моё расписание")
+        self.assertEqual(page.context["my_home_url"], reverse("groups"))
         self.assertNotContains(
             page, reverse("group_schedule", args=[1])
         )
@@ -1498,14 +1485,17 @@ class MenuScheduleLinkTests(BaseTestCase):
 
         self.assertEqual(home_group_id(self.teacher_user), self.second.pk)
 
-    def test_teacher_without_group_gets_plain_link(self):
+    def test_teacher_without_group_gets_own_teacher_schedule(self):
         self.assertIsNone(home_group_id(self.teacher_user))
         self.client.force_login(self.teacher_user)
 
         page = self.client.get(reverse("teachers"))
 
-        self.assertNotContains(page, "Моё расписание")
-        self.assertContains(page, f'href="{reverse("groups")}"')
+        self.assertContains(page, "Моё расписание")
+        self.assertEqual(
+            page.context["my_home_url"],
+            f"{reverse('teachers')}?teacher={self.teacher.pk}",
+        )
 
     def test_curator_of_other_teacher_is_not_used(self):
         other = Teacher.objects.create(teacher_name="Петров П. П.")
@@ -3852,7 +3842,7 @@ class DiaryCsvTests(BaseTestCase):
         self.assertIn("студент «нет» не найден", errors[0])
         self.assertIn("студент «admin2» не найден", errors[1])
         self.assertIn("ДД.ММ.ГГГГ", errors[2])
-        self.assertIn("от 1 до 6", errors[3])
+        self.assertIn("от 1 до 4", errors[3])
         self.assertIn("«Оценка»", errors[4])
         self.assertIn("пуст", errors[5])
         self.assertIn("не найдена", errors[6])
@@ -3904,7 +3894,7 @@ class DiaryCsvTests(BaseTestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_import_does_not_query_per_row_for_lookups(self):
-        rows = "".join(self.row(number=n) for n in range(1, 7))
+        rows = "".join(self.row(number=n) for n in range(1, 5))
         self.upload(self.HEAD + rows)
         Mark.objects.all().delete()
 
@@ -5353,7 +5343,7 @@ class CsvTests(BaseTestCase):
         )
         self.assertEqual(
             self.lines("schedule")[1],
-            "А-01;Понедельник;1;Математика;Иванов И. И.",
+            "А-01;Понедельник;1;Математика;Иванов И. И.;каждая;",
         )
         self.assertEqual(self.lines("bells")[1], "Пара;1;1;08:30;10:00")
 
@@ -5728,7 +5718,7 @@ class CsvTests(BaseTestCase):
         self.assertEqual(len(errors), 3)
         self.assertIn("не привязана пара «Химия»", errors[0])
         self.assertIn("не учебный день", errors[1])
-        self.assertIn("от 1 до 6", errors[2])
+        self.assertIn("от 1 до 4", errors[2])
 
     def test_schedule_teacher_in_two_groups_is_only_a_warning(self):
         other_group = Group.objects.create(
@@ -5786,7 +5776,7 @@ class CsvTests(BaseTestCase):
             "bells", "Вид;Смена;Номер;Начало;Конец\r\n"
             "Пара;1;1;10:00;09:00\r\n"
             "Обед;1;1;12:00;13:00\r\n"
-            "Перемена;1;6;10:00;10:10\r\n"
+            "Перемена;1;4;10:00;10:10\r\n"
             "Пара;1;2;25:00;26:00\r\n"
         )
         errors = self.report(response)["errors"]
@@ -6113,7 +6103,7 @@ class PageHeaderTests(BaseTestCase):
         group = [self.group.pk]
         pages = [
             ("calendar", None, "КАЛЕНДАРЬ"),
-            ("groups", None, "ГРУППЫ"),
+            ("groups", None, "ГРУППЫ НА СЕГОДНЯ"),
             ("teachers", None, "ПРЕПОДАВАТЕЛИ"),
             ("users", None, "ПОЛЬЗОВАТЕЛИ"),
             ("workshop", None, "КУЗНЯ"),
@@ -6511,6 +6501,540 @@ class EmptyCellTests(BaseTestCase):
         )
         self.assertContains(self.page("users"), "— не назначена —")
         self.assertContains(self.page("workshop"), "— Выберите —")
+
+
+class MenuPanelTests(BaseTestCase):
+    """Меню «⋮»: разделы, «Моё расписание», подпись раздела, «Назад»."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.teacher_user = User.objects.create_user(
+            "teacher1", password=PASSWORD
+        )
+        set_role(self.teacher_user, ROLE_TEACHER, self.teacher)
+
+    def page(self, name, *args, who=None, **params):
+        self.client.force_login(who or self.user)
+
+        with fake_today(MONDAY):
+            return self.client.get(reverse(name, args=args), params)
+
+    def panel(self, response):
+        html = response.content.decode()
+        start = html.index('<nav class="main-nav"')
+
+        return html[start:html.index("</nav>", start)]
+
+    def test_home_button_is_first_and_before_all_sections(self):
+        panel = self.panel(self.page("groups"))
+
+        self.assertIn("Моё расписание", panel)
+        self.assertLess(panel.index("nav-home"), panel.index("nav-section"))
+
+    def test_sections_in_order_for_admin(self):
+        panel = self.panel(self.page("groups", who=self.admin))
+        positions = [
+            panel.index(f">{name}</p>")
+            for name in ("Расписание", "Дневник", "Общее", "Управление")
+        ]
+
+        self.assertEqual(positions, sorted(positions))
+
+    def test_student_menu_has_no_admin_part_and_no_journals(self):
+        panel = self.panel(self.page("groups"))
+
+        self.assertNotIn("Управление", panel)
+        self.assertNotIn("Пользователи", panel)
+        self.assertNotIn("Кузня", panel)
+        self.assertNotIn("Журнал", panel)
+        self.assertIn("Мой дневник", panel)
+
+    def test_teacher_sees_journals_and_diary_groups(self):
+        panel = self.panel(self.page("groups", who=self.teacher_user))
+
+        self.assertIn("Журнал", panel)
+        self.assertIn("Общий журнал", panel)
+        self.assertNotIn("Мой дневник", panel)
+        self.assertNotIn("Управление", panel)
+
+    def test_diary_items_lead_to_the_diary_app(self):
+        panel = self.panel(self.page("groups", who=self.admin))
+
+        for name in ("diary_home", "diary_journal", "diary_journal_general"):
+            with self.subTest(item=name):
+                self.assertIn(f'href="{reverse(name)}"', panel)
+                self.assertTrue(reverse(name).startswith("/diary/"))
+
+    def test_schedule_item_is_renamed(self):
+        panel = self.panel(self.page("groups"))
+
+        self.assertIn("Группы на сегодня", panel)
+        self.assertNotRegex(panel, r">\s*Расписание\s*</a>")
+        self.assertNotRegex(panel, r">\s*Группы\s*</a>")
+
+    def test_teachers_and_calendar_are_in_the_common_section(self):
+        panel = self.panel(self.page("groups", who=self.admin))
+        common = panel.index(">Общее</p>")
+        admin = panel.index(">Управление</p>")
+
+        for link in (reverse("teachers"), reverse("calendar")):
+            with self.subTest(link=link):
+                position = panel.index(f'href="{link}"')
+
+                self.assertLess(common, position)
+                self.assertLess(position, admin)
+
+    def test_student_profile_is_in_the_common_section(self):
+        panel = self.panel(self.page("groups"))
+        link = reverse("student_card", args=[self.user.pk])
+
+        self.assertLess(
+            panel.index(">Общее</p>"), panel.index(f'href="{link}"')
+        )
+
+    def test_zone_label_in_the_header(self):
+        group = self.group.pk
+        cases = (
+            (("groups",), "schedule", "Расписание"),
+            (("group_schedule", group), "schedule", "Расписание"),
+            (("diary_home",), "diary", "Дневник"),
+            (("diary_group", group), "diary", "Дневник"),
+            (("calendar",), "common", "Общее"),
+            (("teachers",), "common", "Общее"),
+            (("teacher_card", self.teacher.pk), "common", "Общее"),
+            (("group_card", group), "common", "Общее"),
+            (("users",), "admin", "Управление"),
+            (("workshop",), "admin", "Управление"),
+        )
+
+        for (name, *args), zone, label in cases:
+            with self.subTest(page=name):
+                response = self.page(name, *args, who=self.admin)
+                html = response.content.decode()
+                header = html[html.index("<header"):html.index("</header>")]
+
+                self.assertEqual(response.context["nav_zone"], zone)
+                self.assertIn(f'class="zone-chip zone-{zone}"', header)
+                self.assertIn(f">{label}</span>", header)
+
+    def test_no_zone_label_on_the_main_page_and_for_guests(self):
+        self.client.force_login(self.admin)
+
+        with fake_today(MONDAY):
+            home = self.client.get("/")
+
+        self.assertIsNone(home.context["nav_zone"])
+        self.assertNotContains(home, "zone-chip zone-")
+
+        self.client.logout()
+        login = self.client.get(reverse("login"))
+
+        self.assertNotContains(login, "zone-chip zone-")
+        self.assertNotContains(login, 'class="main-nav"')
+        self.assertContains(login, "guest-nav")
+        self.assertNotContains(login, "data-nav-toggle")
+
+    def test_current_item_is_marked(self):
+        panel = self.panel(self.page("groups"))
+
+        self.assertRegex(
+            panel, r'class="nav-link is-current">\s*Группы на сегодня'
+        )
+        self.assertNotRegex(
+            panel, r'class="nav-link is-current">\s*Календарь'
+        )
+
+    def test_home_url_by_role(self):
+        set_group(self.user, self.group)
+        self.third = Group.objects.create(
+            group_name="В-03", group_course=self.course, shift=self.shift
+        )
+        self.third.group_curator = self.teacher
+        self.third.save()
+
+        cases = (
+            (self.user, reverse("group_schedule", args=[self.group.pk])),
+            (self.teacher_user, reverse("group_schedule", args=[self.third.pk])),
+            (self.admin, reverse("groups")),
+        )
+
+        for who, expected in cases:
+            with self.subTest(user=who.username):
+                response = self.page("calendar", who=who)
+
+                self.assertEqual(response.context["my_home_url"], expected)
+                self.assertContains(response, f'href="{expected}" class="nav-home"')
+
+    def test_panel_has_close_button_and_scrim(self):
+        html = self.page("groups").content.decode()
+
+        for marker in ("data-nav-close", "data-nav-scrim", 'id="main-nav"'):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, html)
+
+        self.assertLess(
+            html.index("data-nav-toggle"), html.index('id="main-nav"')
+        )
+
+    def test_script_closes_the_panel(self):
+        script = (STATIC_DIR / "nav.js").read_text(encoding="utf-8")
+
+        for marker in (
+            "data-nav-close", "data-nav-scrim", "nav-open", "Escape",
+            "aria-expanded",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, script)
+
+    def test_groups_title_follows_the_selected_day(self):
+        today = self.page("groups", who=self.admin)
+        other = self.page("groups", who=self.admin, date="2026-10-20")
+
+        self.assertContains(today, "<h1>ГРУППЫ НА СЕГОДНЯ</h1>")
+        self.assertContains(other, "<h1>ГРУППЫ НА ДЕНЬ</h1>")
+
+    def test_main_page_schedule_choice_uses_the_home_button(self):
+        set_group(self.user, self.group)
+        self.client.force_login(self.user)
+
+        html = self.client.get(reverse("home")).content.decode()
+
+        self.assertIn(
+            f'<a class="hero-choice-link" href="{reverse("group_schedule", args=[self.group.pk])}">',
+            html,
+        )
+
+    def test_journals_go_back_to_the_diary(self):
+        for name in ("diary_journal", "diary_journal_general"):
+            with self.subTest(page=name):
+                response = self.page(name, who=self.admin)
+
+                self.assertEqual(
+                    response.context["nav_back_url"], reverse("diary_home")
+                )
+
+
+class ModeSwitchTests(BaseTestCase):
+    """Переключатель «Расписание | Дневник» и запоминание режима студента."""
+
+    WEEK = "2026-10-20"
+
+    def setUp(self):
+        User = get_user_model()
+        self.teacher_account = User.objects.get(
+            username="teacherivanov@gmail.com"
+        )
+        self.other = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+
+    def schedule(self, who, group=None, **params):
+        self.client.force_login(who)
+        params.setdefault("date", self.WEEK)
+
+        return self.client.get(
+            reverse("group_schedule", args=[(group or self.group).pk]), params
+        )
+
+    def diary(self, who, **params):
+        self.client.force_login(who)
+        params.setdefault("date", self.WEEK)
+
+        return self.client.get(reverse("diary_home"), params)
+
+    def diary_group_url(self, group=None):
+        return reverse("diary_group", args=[(group or self.group).pk])
+
+    ACTIVE_SCHEDULE = (
+        '<span class="mode-switch-item is-active" aria-current="page">'
+        "Расписание</span>"
+    )
+    ACTIVE_DIARY = (
+        '<span class="mode-switch-item is-active" aria-current="page">'
+        "Дневник</span>"
+    )
+
+    def test_admin_switch_keeps_group_and_week(self):
+        response = self.schedule(self.admin)
+
+        self.assertContains(response, self.ACTIVE_SCHEDULE)
+        self.assertContains(
+            response,
+            f'<a class="mode-switch-item" '
+            f'href="{self.diary_group_url()}?date={self.WEEK}">Дневник</a>',
+        )
+
+    def test_student_switch_leads_to_own_diary(self):
+        set_group(self.user, self.group)
+
+        response = self.schedule(self.user)
+
+        self.assertContains(
+            response,
+            f'<a class="mode-switch-item" '
+            f'href="{reverse("diary_home")}?date={self.WEEK}">Дневник</a>',
+        )
+
+    def test_student_has_no_switch_on_another_group(self):
+        set_group(self.user, self.group)
+
+        response = self.schedule(self.user, self.other)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "mode-switch")
+
+    def test_teacher_of_the_group_and_curator_have_switch(self):
+        outsider = make_teacher("Сидоров С. С.", "sidorov@gmail.com")
+        outsider_user = get_user_model().objects.get(
+            username="sidorov@gmail.com"
+        )
+
+        # преподаватель, который ведёт пару в группе
+        self.assertContains(
+            self.schedule(self.teacher_account), "mode-switch-item"
+        )
+        # посторонний преподаватель дневника этой группы не видит
+        self.assertNotContains(
+            self.schedule(outsider_user), "mode-switch"
+        )
+
+        # куратор видит дневник своей группы, даже если ничего не ведёт
+        self.group.group_curator = outsider
+        self.group.save()
+
+        self.assertContains(self.schedule(outsider_user), "mode-switch-item")
+
+    def test_diary_page_switch_leads_back_to_the_same_week(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(
+            self.diary_group_url(), {"date": self.WEEK}
+        )
+
+        self.assertContains(response, self.ACTIVE_DIARY)
+        self.assertContains(
+            response,
+            f'<a class="mode-switch-item" '
+            f'href="{reverse("group_schedule", args=[self.group.pk])}'
+            f'?date=2026-10-19">Расписание</a>',
+        )
+
+    def test_student_diary_switch_leads_to_own_schedule(self):
+        set_group(self.user, self.group)
+
+        response = self.diary(self.user)
+
+        self.assertContains(response, self.ACTIVE_DIARY)
+        self.assertContains(
+            response,
+            f'href="{reverse("group_schedule", args=[self.group.pk])}'
+            f'?date=2026-10-19">Расписание</a>',
+        )
+
+    def test_student_without_group_has_no_switch(self):
+        response = self.diary(self.user)
+
+        self.assertNotContains(response, "mode-switch")
+
+    def test_student_choice_is_remembered_in_a_cookie(self):
+        set_group(self.user, self.group)
+
+        schedule = self.schedule(self.user)
+        cookie = schedule.cookies["raspisite_mode"]
+
+        self.assertEqual(cookie.value, "schedule")
+        self.assertEqual(cookie["max-age"], 365 * 24 * 60 * 60)
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["samesite"], "Lax")
+        self.assertEqual(cookie["path"], "/")
+
+        diary = self.diary(self.user)
+
+        self.assertEqual(diary.cookies["raspisite_mode"].value, "diary")
+
+    def test_cookie_is_not_rewritten_when_nothing_changes(self):
+        set_group(self.user, self.group)
+        self.client.cookies["raspisite_mode"] = "diary"
+
+        self.assertNotIn("raspisite_mode", self.diary(self.user).cookies)
+
+    def test_only_students_get_the_cookie(self):
+        self.assertNotIn(
+            "raspisite_mode", self.schedule(self.admin).cookies
+        )
+        self.assertNotIn(
+            "raspisite_mode", self.schedule(self.teacher_account).cookies
+        )
+        self.assertNotIn("raspisite_mode", self.diary(self.admin).cookies)
+
+    def test_looking_at_another_group_does_not_change_the_choice(self):
+        set_group(self.user, self.group)
+
+        response = self.schedule(self.user, self.other)
+
+        self.assertNotIn("raspisite_mode", response.cookies)
+
+    def test_home_button_follows_the_remembered_mode(self):
+        set_group(self.user, self.group)
+        own = reverse("group_schedule", args=[self.group.pk])
+        self.client.force_login(self.user)
+
+        plain = self.client.get(reverse("calendar"))
+
+        self.assertEqual(plain.context["my_home_url"], own)
+        self.assertEqual(plain.context["my_home_label"], "Моё расписание")
+
+        self.client.cookies["raspisite_mode"] = "diary"
+        remembered = self.client.get(reverse("calendar"))
+
+        self.assertEqual(
+            remembered.context["my_home_url"], reverse("diary_home")
+        )
+        self.assertEqual(remembered.context["my_home_label"], "Мой дневник")
+        self.assertContains(
+            remembered, f'href="{reverse("diary_home")}" class="nav-home"'
+        )
+
+    def test_junk_cookie_means_schedule(self):
+        set_group(self.user, self.group)
+        self.client.cookies["raspisite_mode"] = "<script>"
+        self.client.force_login(self.user)
+
+        page = self.client.get(reverse("calendar"))
+
+        self.assertEqual(
+            page.context["my_home_url"],
+            reverse("group_schedule", args=[self.group.pk]),
+        )
+
+    def test_cookie_does_not_affect_other_roles_or_a_student_without_group(self):
+        self.client.cookies["raspisite_mode"] = "diary"
+
+        for who, expected in (
+            (self.admin, reverse("groups")),
+            (self.user, reverse("groups")),
+        ):
+            with self.subTest(user=who.username):
+                self.client.force_login(who)
+                page = self.client.get(reverse("calendar"))
+
+                self.assertEqual(page.context["my_home_url"], expected)
+                self.assertEqual(
+                    page.context["my_home_label"], "Моё расписание"
+                )
+
+    def test_main_page_choice_stays_the_schedule(self):
+        set_group(self.user, self.group)
+        self.client.cookies["raspisite_mode"] = "diary"
+        self.client.force_login(self.user)
+
+        html = self.client.get(reverse("home")).content.decode()
+        match = re.search(
+            r'<a class="hero-choice-link"\s+href="([^"]+)"', html
+        )
+
+        self.assertEqual(
+            match.group(1),
+            reverse("group_schedule", args=[self.group.pk]),
+        )
+
+    def test_switch_css(self):
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertRegex(css, r"\.mode-switch \{[^}]*border-radius: 999px")
+        self.assertRegex(
+            css, r"\.mode-switch-item\.is-active \{[^}]*background: #3655d9"
+        )
+
+    def test_read_mode_defaults_to_schedule(self):
+        from .modes import read_mode
+
+        request = mock.Mock(COOKIES={})
+        self.assertEqual(read_mode(request), "schedule")
+
+        request = mock.Mock(COOKIES={"raspisite_mode": "diary"})
+        self.assertEqual(read_mode(request), "diary")
+
+        request = mock.Mock(COOKIES={"raspisite_mode": "x"})
+        self.assertEqual(read_mode(request), "schedule")
+
+
+class ScrollMemoryTests(BaseTestCase):
+    """Запоминание прокрутки (scroll.js) и всплывающие сообщения."""
+
+    def source(self, *parts):
+        base = STATIC_DIR.parent.parent
+
+        return (base.joinpath(*parts)).read_text(encoding="utf-8")
+
+    def test_script_is_loaded_on_every_page_after_nav_js(self):
+        self.client.force_login(self.admin)
+        pages = (
+            self.client.get(reverse("groups")),
+            self.client.get(reverse("users")),
+            self.client.get("/"),
+        )
+        self.client.logout()
+        pages += (self.client.get(reverse("login")),)
+
+        for response in pages:
+            html = response.content.decode()
+
+            self.assertIn("scroll.js", html)
+            self.assertLess(html.index("nav.js"), html.index("scroll.js"))
+
+    def test_wide_tables_are_marked_for_horizontal_memory(self):
+        files = (
+            ("schedule", "templates", "workshop.html"),
+            ("schedule", "templates", "users.html"),
+            ("schedule", "templates", "overview.html"),
+            ("diary", "templates", "diary", "group.html"),
+            ("diary", "templates", "diary", "journal.html"),
+        )
+
+        for parts in files:
+            with self.subTest(template="/".join(parts)):
+                self.assertIn("data-scroll-x", self.source(*parts))
+
+    def test_users_page_table_wrapper_is_marked(self):
+        self.client.force_login(self.admin)
+
+        self.assertContains(
+            self.client.get(reverse("users")),
+            'class="workshop-table-wrap" data-scroll-x',
+        )
+
+    def test_script_rules(self):
+        script = (STATIC_DIR / "scroll.js").read_text(encoding="utf-8")
+
+        for marker in (
+            "sessionStorage",
+            "raspisite:scroll",
+            "raspisite:scroll-pending",
+            "data-scroll-x",
+            '"reload"',
+            "window.location.hash",
+            'addEventListener("submit"',
+            "is-floating",
+            "is-gone",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, script)
+
+        # на ссылки скрипт не влияет: нет перехвата кликов
+        self.assertNotIn('"click"', script.replace('list.addEventListener("click"', ""))
+
+    def test_floating_messages_css(self):
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertRegex(css, r"\.messages\.is-floating \{[^}]*position: fixed")
+        self.assertRegex(css, r"\.messages\.is-gone \{\s*display: none")
+
+    def test_messages_markup_is_plain_and_floating_is_added_by_script(self):
+        template = self.source("schedule", "templates", "main.html")
+
+        self.assertIn('<ul class="messages">', template)
+        self.assertNotIn("is-floating", template)
 
 
 class MainPageChoiceTests(BaseTestCase):
@@ -7002,12 +7526,15 @@ class SiteHeaderTests(BaseTestCase):
 
         self.assertNotContains(page, "data-nav-toggle")
 
-    def test_back_button_is_after_logout_in_the_header(self):
+    def test_back_strip_is_under_main_and_not_in_the_header(self):
         html = self.get("groups", who=self.admin).content.decode()
+        header = html[html.index("<header"):html.index("</header>")]
 
         self.assertIn("data-back", html)
-        self.assertLess(html.index("nav-logout"), html.index("nav-back"))
-        self.assertLess(html.index("nav-back"), html.index("</header>"))
+        self.assertNotIn("data-back", header)
+        self.assertNotIn("← Назад", html)
+        self.assertLess(html.index("</main>"), html.index("back-strip"))
+        self.assertLess(html.index("back-strip"), html.index("</body>"))
 
     def test_no_back_button_on_home_and_login(self):
         self.client.force_login(self.admin)
@@ -7059,12 +7586,39 @@ class SiteHeaderTests(BaseTestCase):
         self.assertIn("data-back", script)
         self.assertIn("Escape", script)
 
-    def test_burger_breakpoint_is_in_css(self):
+    def test_menu_panel_css(self):
         css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
 
-        self.assertIn("@media (max-width: 1340px)", css)
-        self.assertRegex(css, r"\.js \.nav-toggle ~ \.main-nav \{\s*display: none")
-        self.assertRegex(css, r"\.nav-toggle,\s*\.nav-user \{\s*display: none")
+        # С JavaScript панель выезжает справа, без него лежит под шапкой
+        self.assertRegex(
+            css, r"\.js \.nav-toggle ~ \.main-nav \{[^}]*position: fixed"
+        )
+        self.assertRegex(
+            css, r"\.js \.nav-toggle ~ \.main-nav \{[^}]*right: 0"
+        )
+        self.assertRegex(
+            css,
+            r"\.js \.nav-toggle ~ \.main-nav \{[^}]*"
+            r"transform: translateX\(100%\)",
+        )
+        self.assertRegex(css, r"\.nav-toggle \{\s*display: none")
+        self.assertRegex(css, r"\.js \.nav-toggle \{\s*display: inline-flex")
+        # Фон панели — акцентный цвет сайта, на телефоне панель на всю ширину
+        self.assertRegex(css, r"\.main-nav \{[^}]*background: #3655d9")
+        self.assertRegex(
+            css,
+            r"@media \(max-width: 600px\) \{\s*"
+            r"\.js \.nav-toggle ~ \.main-nav \{\s*width: 100%",
+        )
+        self.assertIn("html.nav-open", css)
+
+    def test_back_strip_css(self):
+        css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+
+        self.assertRegex(css, r"\.back-strip \{[^}]*position: fixed")
+        self.assertRegex(css, r"\.back-strip \{[^}]*right: 14px")
+        self.assertRegex(css, r"\.back-strip \{[^}]*color: #111111")
+        self.assertNotIn(".nav-back", css)
 
     def test_profile_heads_have_no_back_buttons(self):
         for name, args in (
@@ -7495,3 +8049,2661 @@ class SemesterScriptTests(TestCase):
     def test_script_is_safe_to_rerun(self):
         self.assertNotIn("DROP", self.script)
         self.assertNotIn("DELETE", self.script)
+
+
+class PairLimitTests(TestCase):
+    """Четыре пары в день: одно место для числа и база, которая его знает."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        base = Path(settings.BASE_DIR)
+        cls.limit_script = (
+            base / "database" / "limit_pairs.py"
+        ).read_text(encoding="utf-8")
+        cls.css = (
+            base / "schedule" / "static" / "style.css"
+        ).read_text(encoding="utf-8")
+
+    def test_limits_are_four_pairs_and_three_breaks(self):
+        from .limits import (
+            BREAK_COUNT, BREAK_NUMBERS, FIRST_PAIR, LAST_PAIR, PAIR_NUMBERS,
+            pair_range_text,
+        )
+
+        self.assertEqual((FIRST_PAIR, LAST_PAIR), (1, 4))
+        self.assertEqual(list(PAIR_NUMBERS), [1, 2, 3, 4])
+        self.assertEqual(list(BREAK_NUMBERS), [1, 2, 3])
+        self.assertEqual(BREAK_COUNT, 3)
+        self.assertEqual(pair_range_text(), "от 1 до 4")
+
+    def test_mark_on_fifth_pair_is_rejected(self):
+        from diary.models import MARK_SCORE
+
+        mark = Mark(
+            student=get_user_model().objects.create_user("limit-s"),
+            pair=Pair.objects.create(
+                teacher=Teacher.objects.create(teacher_name="Т. Т."),
+                pair_name="Физика",
+            ),
+            lesson_date=date(2026, 10, 19),
+            pair_number=5,
+            kind=MARK_SCORE,
+            score=80,
+        )
+
+        with self.assertRaises(ValidationError):
+            mark.full_clean()
+
+    def test_limit_script_asks_for_confirmation_and_is_transactional(self):
+        self.assertIn("LAST_PAIR = 4", self.limit_script)
+        self.assertIn("ДА", self.limit_script)
+        self.assertIn("pg_dump", self.limit_script)
+        self.assertNotIn("DROP TABLE", self.limit_script)
+
+    def test_css_has_no_do_not_touch_block(self):
+        self.assertNotIn("Не трогать", self.css)
+        self.assertNotIn("не трогать", self.css.lower())
+
+
+class PairDescriptionTests(BaseTestCase):
+    """Описание предмета: подсказка, журнал, права на изменение."""
+
+    WEEK = "2026-10-19"
+
+    def setUp(self):
+        User = get_user_model()
+        self.teacher_account = User.objects.get(
+            username="teacherivanov@gmail.com"
+        )
+        other = make_teacher("Петров П. П.", "teacherpetrov@gmail.com")
+        self.other_account = User.objects.get(
+            username="teacherpetrov@gmail.com"
+        )
+        self.other_pair = make_pair(self.group, other, "Физика")
+        Day.objects.create(
+            group=self.group, pair=self.other_pair, pair_number=2,
+            weekday=Weekday.objects.get(pk=1),
+        )
+
+    def save(self, who, pair=None, text="", **extra):
+        self.client.force_login(who)
+
+        return self.client.post(
+            reverse("pair_description", args=[(pair or self.pair).pk]),
+            {"description": text, **extra},
+        )
+
+    def test_description_defaults_to_empty_and_limit_is_500(self):
+        self.assertEqual(self.pair.description, "")
+        self.assertEqual(
+            Pair._meta.get_field("description").max_length, 500
+        )
+
+    def test_teacher_of_the_pair_saves_description(self):
+        response = self.save(self.teacher_account, text="  Алгебра\n\n\n\nи   начала анализа ")
+
+        self.assertEqual(response.status_code, 302)
+        self.pair.refresh_from_db()
+        self.assertEqual(self.pair.description, "Алгебра\n\nи начала анализа")
+
+    def test_admin_saves_description_of_any_pair(self):
+        self.save(self.admin, pair=self.other_pair, text="Механика")
+
+        self.other_pair.refresh_from_db()
+        self.assertEqual(self.other_pair.description, "Механика")
+
+    def test_other_teacher_and_student_cannot_save(self):
+        for who in (self.other_account, self.user):
+            response = self.save(who, text="Взлом")
+
+            self.assertEqual(response.status_code, 403)
+
+        self.pair.refresh_from_db()
+        self.assertEqual(self.pair.description, "")
+
+    def test_too_long_description_is_not_saved(self):
+        response = self.save(self.admin, text="я" * 501)
+
+        self.assertEqual(response.status_code, 302)
+        self.pair.refresh_from_db()
+        self.assertEqual(self.pair.description, "")
+        self.assertTrue(any(
+            "500" in str(message) for message in get_messages(response.wsgi_request)
+        ))
+
+    def test_exactly_500_characters_are_saved(self):
+        self.save(self.admin, text="я" * 500)
+
+        self.pair.refresh_from_db()
+        self.assertEqual(len(self.pair.description), 500)
+
+    def test_empty_text_clears_description(self):
+        self.pair.description = "Что-то"
+        self.pair.save()
+
+        self.save(self.admin, text="   ")
+
+        self.pair.refresh_from_db()
+        self.assertEqual(self.pair.description, "")
+
+    def test_only_post_and_login(self):
+        url = reverse("pair_description", args=[self.pair.pk])
+
+        self.assertEqual(self.client.post(url, {}).status_code, 302)
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(url).status_code, 405)
+
+    def test_redirect_stays_on_this_site(self):
+        diary = reverse("diary_group", args=[self.group.pk])
+
+        local = self.save(self.admin, text="а", next=diary)
+        outside = self.save(self.admin, text="б", next="https://evil.example/")
+
+        self.assertEqual(local["Location"], diary)
+        self.assertEqual(outside["Location"], reverse("diary_home"))
+
+    def test_schedule_shows_description_in_tooltip(self):
+        self.pair.description = "Линейная алгебра"
+        self.pair.save()
+        self.client.force_login(self.user)
+
+        with fake_today(MONDAY):
+            html = self.client.get(
+                reverse("group_schedule", args=[self.group.pk]),
+                {"date": self.WEEK},
+            ).content.decode()
+
+        self.assertIn('title="Линейная алгебра"', html)
+        self.assertEqual(html.count("has-description"), 1)
+
+    def test_schedule_without_description_has_no_tooltip(self):
+        self.client.force_login(self.user)
+
+        with fake_today(MONDAY):
+            html = self.client.get(
+                reverse("group_schedule", args=[self.group.pk]),
+                {"date": self.WEEK},
+            ).content.decode()
+
+        self.assertNotIn("has-description", html)
+
+    def test_replaced_subject_does_not_keep_old_description(self):
+        from .changes import describe_original
+
+        self.pair.description = "Описание математики"
+        change = ScheduleChange(
+            change_type="REPLACE", new_pair_name="Информатика",
+        )
+
+        lesson = describe_original(self.pair, change)
+
+        self.assertEqual(lesson["subject"], "Информатика")
+        self.assertEqual(lesson["description"], "")
+        self.assertEqual(
+            describe_original(self.pair, None)["description"],
+            "Описание математики",
+        )
+
+    def test_diary_group_lists_descriptions_with_edit_form(self):
+        self.pair.description = "Линейная алгебра"
+        self.pair.save()
+
+        for who in (self.admin, self.teacher_account):
+            self.client.force_login(who)
+
+            with fake_today(MONDAY):
+                response = self.client.get(
+                    reverse("diary_group", args=[self.group.pk]),
+                    {"date": self.WEEK},
+                )
+
+            self.assertContains(response, "Описание предметов")
+            self.assertContains(response, "Линейная алгебра")
+            self.assertContains(
+                response,
+                reverse("pair_description", args=[self.pair.pk]),
+            )
+
+    def test_teacher_sees_edit_form_only_for_own_pair(self):
+        self.client.force_login(self.teacher_account)
+
+        with mock.patch(
+            "django.utils.timezone.localdate", return_value=MONDAY
+        ):
+            html = self.client.get(
+                reverse("diary_group", args=[self.group.pk]),
+                {"date": self.WEEK},
+            ).content.decode()
+
+        self.assertIn(reverse("pair_description", args=[self.pair.pk]), html)
+        self.assertNotIn(
+            reverse("pair_description", args=[self.other_pair.pk]), html
+        )
+
+    def test_workshop_pair_form_has_description_field(self):
+        from .forms import PairForm
+
+        form = PairForm(data={
+            "pair_name": "Химия",
+            "teacher": self.teacher.pk,
+            "description": "я" * 501,
+        })
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("description", form.errors)
+        self.assertIn('maxlength="500"', str(form["description"]))
+
+    def test_create_script_and_model_agree(self):
+        base = Path(settings.BASE_DIR) / "database"
+        create = (base / "create_db.py").read_text(encoding="utf-8")
+        script = (base / "add_pair_description.py").read_text(
+            encoding="utf-8"
+        )
+
+        for text in (create, script):
+            self.assertIn("description VARCHAR(500)", text)
+
+        self.assertIn("IF NOT EXISTS", script)
+        self.assertNotIn("DROP", script)
+        self.assertNotIn("DELETE", script)
+
+
+class UserInlineEditTests(BaseTestCase):
+    """Правка пользователя в строке: ФИО, почта, доступ (action=edit_user)."""
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        User = get_user_model()
+        self.teacher_user = User.objects.get(
+            username="teacherivanov@gmail.com"
+        )
+
+    def post(self, user, **fields):
+        data = {
+            "action": "edit_user",
+            "user_id": user.pk,
+            "last_name": user.last_name or "Иванов",
+            "first_name": user.first_name or "Иван",
+            "patronymic": "",
+            "username": user.get_username(),
+            "is_active": "on" if user.is_active else "",
+        }
+        data.update(fields)
+
+        return self.client.post(reverse("users"), data)
+
+    def fresh(self, user):
+        return get_user_model().objects.get(pk=user.pk)
+
+    def test_edit_link_opens_form_only_for_that_row(self):
+        plain = self.client.get(reverse("users")).content.decode()
+        opened = self.client.get(
+            reverse("users"), {"edit": self.user.pk}
+        ).content.decode()
+
+        self.assertNotIn('value="edit_user"', plain)
+        self.assertEqual(opened.count('value="edit_user"'), 1)
+        self.assertIn('id="user-%d"' % self.user.pk, opened)
+        self.assertEqual(
+            plain.count("user-edit-link"),
+            get_user_model().objects.count(),
+        )
+
+    def test_unknown_edit_id_changes_nothing(self):
+        page = self.client.get(reverse("users"), {"edit": 99999})
+
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, 'value="edit_user"')
+
+    def test_student_name_is_saved(self):
+        response = self.post(
+            self.user, last_name="Сидоров", first_name="Пётр",
+            patronymic="Игоревич",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        user = self.fresh(self.user)
+        self.assertEqual(
+            (user.last_name, user.first_name, user.profile.patronymic),
+            ("Сидоров", "Пётр", "Игоревич"),
+        )
+        self.assertEqual(mail.outbox, [])
+
+    def test_teacher_name_updates_teacher_record(self):
+        self.post(
+            self.teacher_user, last_name="Петров", first_name="Пётр",
+            patronymic="Петрович",
+        )
+
+        teacher = Teacher.objects.get(pk=self.teacher.pk)
+        self.assertEqual(teacher.teacher_name, "Петров Пётр Петрович")
+
+    def test_email_change_notifies_old_and_new_address(self):
+        old = self.user.get_username()
+
+        self.post(self.user, username="New.Address@Gmail.com")
+
+        user = self.fresh(self.user)
+        self.assertEqual(user.username, "newaddress@gmail.com")
+        self.assertEqual(user.email, "newaddress@gmail.com")
+        self.assertEqual(
+            sorted(m.to[0] for m in mail.outbox),
+            sorted([old, "newaddress@gmail.com"]),
+        )
+        self.assertTrue(all(
+            old in m.body and "newaddress@gmail.com" in m.body
+            for m in mail.outbox
+        ))
+
+    def test_password_survives_email_change(self):
+        self.post(self.user, username="another@gmail.com")
+
+        self.assertIsNotNone(authenticate(
+            username="another@gmail.com", password=PASSWORD
+        ))
+
+    def test_busy_or_wrong_email_is_rejected_without_mail(self):
+        busy = self.teacher_user.get_username()
+
+        for bad in (busy.upper(), "name@yahoo.com", "bad", ""):
+            response = self.post(self.user, username=bad)
+
+            self.assertEqual(response.status_code, 200, bad)
+            self.assertContains(response, 'value="edit_user"')
+
+        self.assertEqual(
+            self.fresh(self.user).username, self.user.get_username()
+        )
+        self.assertEqual(mail.outbox, [])
+
+    def test_failed_mail_still_saves_and_warns(self):
+        with mock.patch(
+            "schedule.mail.send_mail", side_effect=OSError("нет сети")
+        ):
+            response = self.post(self.user, username="late@gmail.com")
+
+        self.assertEqual(self.fresh(self.user).username, "late@gmail.com")
+        texts = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("письмо не ушло" in t for t in texts))
+
+    def test_legacy_login_without_gmail_stays_if_untouched(self):
+        old = get_user_model().objects.create_user(
+            username="oldadmin", password=PASSWORD,
+            first_name="Олег", last_name="Админов",
+        )
+
+        response = self.post(old, last_name="Админович")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.fresh(old).username, "oldadmin")
+        self.assertEqual(self.fresh(old).email, "")
+        self.assertEqual(self.fresh(old).last_name, "Админович")
+
+    def test_bad_names_are_rejected(self):
+        for field, value in (
+            ("last_name", ""), ("first_name", "И1ван"),
+            ("patronymic", "<b>"), ("last_name", "я" * 101),
+        ):
+            response = self.post(self.user, **{field: value})
+
+            self.assertEqual(response.status_code, 200, (field, value))
+
+    def test_disable_and_enable_access(self):
+        self.post(self.user, is_active="")
+
+        self.assertFalse(self.fresh(self.user).is_active)
+        self.client.logout()
+        self.assertFalse(self.client.login(
+            username=self.user.get_username(), password=PASSWORD
+        ))
+
+        self.client.force_login(self.admin)
+        self.post(self.fresh(self.user), is_active="on")
+
+        self.assertTrue(self.fresh(self.user).is_active)
+
+    def test_disabled_row_is_marked(self):
+        self.user.is_active = False
+        self.user.save()
+
+        html = self.client.get(reverse("users")).content.decode()
+
+        self.assertIn("отключён", html)
+        self.assertIn('class="is-off"', html)
+
+    def test_admin_cannot_disable_self_or_superuser(self):
+        boss = get_user_model().objects.create_superuser(
+            "boss@gmail.com", "boss@gmail.com", PASSWORD
+        )
+
+        self.post(self.admin, is_active="")
+        self.post(boss, is_active="")
+
+        self.assertTrue(self.fresh(self.admin).is_active)
+        self.assertTrue(self.fresh(boss).is_active)
+
+    def test_non_admin_cannot_edit(self):
+        self.client.force_login(self.user)
+
+        response = self.post(self.teacher_user, last_name="Взлом")
+
+        self.assertNotEqual(response.status_code, 200)
+        self.assertNotEqual(self.fresh(self.teacher_user).last_name, "Взлом")
+
+    def test_unknown_user_gives_message_not_error(self):
+        response = self.client.post(reverse("users"), {
+            "action": "edit_user", "user_id": 99999,
+            "last_name": "А", "first_name": "Б", "username": "x@gmail.com",
+        }, follow=True)
+
+        self.assertContains(response, "Пользователь не найден")
+
+    def test_email_settings_use_console_without_credentials(self):
+        text = (Path(settings.BASE_DIR) / "config" / "settings.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("EMAIL_HOST_PASSWORD", text)
+        self.assertIn("console.EmailBackend", text)
+
+
+class RegistrationTests(BaseTestCase):
+    """Самостоятельная регистрация студента: анкета, код на почту, вход."""
+
+    EMAIL = "newstudent77@gmail.com"
+
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def data(self, **extra):
+        data = {
+            "last_name": "Сидоров",
+            "first_name": "Пётр",
+            "patronymic": "Игоревич",
+            "username": self.EMAIL,
+            "group": self.group.pk,
+            "password": PASSWORD,
+            "password2": PASSWORD,
+        }
+        data.update(extra)
+
+        return data
+
+    def start(self, **extra):
+        return self.client.post(reverse("register"), self.data(**extra))
+
+    def sent_code(self, index=-1):
+        return re.search(r"\b(\d{6})\b", mail.outbox[index].body).group(1)
+
+    def confirm(self, code, **extra):
+        return self.client.post(
+            reverse("register_confirm"), {"code": code, **extra}
+        )
+
+    def student(self):
+        return get_user_model().objects.filter(username=self.EMAIL).first()
+
+    # --- первый шаг ---
+
+    def test_pages_open_for_anonymous(self):
+        self.assertContains(
+            self.client.get(reverse("register")), "Получить код"
+        )
+
+    def test_valid_form_sends_code_and_creates_no_account(self):
+        response = self.start()
+
+        self.assertRedirects(
+            response, reverse("register_confirm"),
+            fetch_redirect_response=False,
+        )
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.EMAIL])
+        self.assertRegex(self.sent_code(), r"^\d{6}$")
+        self.assertIsNone(self.student())
+
+    def test_session_keeps_neither_code_nor_plain_password(self):
+        self.start()
+
+        draft = self.client.session["registration"]
+
+        self.assertNotIn("code", draft)
+        self.assertNotIn(PASSWORD, str(draft))
+        self.assertNotEqual(draft["password_hash"], PASSWORD)
+        self.assertNotEqual(draft["digest"], self.sent_code())
+
+    def test_bad_forms_send_nothing(self):
+        busy = get_user_model().objects.get(
+            username="teacherivanov@gmail.com"
+        )
+        cases = (
+            {"username": busy.username.upper()},
+            {"username": "name@yahoo.com"},
+            {"username": "bad"},
+            {"password2": "Another-pass-777"},
+            {"password": "12345678", "password2": "12345678"},
+            {"password": "short", "password2": "short"},
+            {"group": ""},
+            {"group": 99999},
+            {"last_name": ""},
+            {"first_name": "П1"},
+        )
+
+        for extra in cases:
+            response = self.start(**extra)
+
+            self.assertEqual(response.status_code, 200, extra)
+
+        self.assertEqual(mail.outbox, [])
+        self.assertNotIn("registration", self.client.session)
+
+    def test_mail_failure_keeps_form_and_creates_nothing(self):
+        with mock.patch(
+            "schedule.mail.send_mail", side_effect=OSError("нет сети")
+        ):
+            response = self.start()
+
+        self.assertContains(response, "Не удалось отправить письмо")
+        self.assertNotIn("registration", self.client.session)
+
+    def test_too_many_attempts_for_one_address(self):
+        statuses = [self.start().status_code for _ in range(6)]
+
+        self.assertEqual(statuses[:5], [302] * 5)
+        self.assertEqual(statuses[5], 429)
+        self.assertEqual(len(mail.outbox), 5)
+
+    def test_logged_in_user_is_sent_away(self):
+        self.client.force_login(self.user)
+
+        for name in ("register", "register_confirm"):
+            self.assertEqual(
+                self.client.get(reverse(name)).status_code, 302
+            )
+
+    # --- второй шаг ---
+
+    def test_confirm_without_draft_goes_back(self):
+        self.assertRedirects(
+            self.client.get(reverse("register_confirm")),
+            reverse("register"), fetch_redirect_response=False,
+        )
+
+    def test_right_code_creates_student_and_logs_in(self):
+        self.start()
+
+        response = self.confirm(self.sent_code())
+
+        user = self.student()
+        self.assertIsNotNone(user)
+        self.assertRedirects(
+            response,
+            reverse("group_schedule", args=[self.group.pk]),
+            fetch_redirect_response=False,
+        )
+        self.assertEqual(user_role(user), "student")
+        self.assertEqual(own_group_id(user), self.group.pk)
+        self.assertEqual(
+            (user.last_name, user.first_name, user.profile.patronymic),
+            ("Сидоров", "Пётр", "Игоревич"),
+        )
+        self.assertEqual(user.email, self.EMAIL)
+        self.assertTrue(user.check_password(PASSWORD))
+        self.assertEqual(
+            self.client.session["_auth_user_id"], str(user.pk)
+        )
+        self.assertNotIn("registration", self.client.session)
+
+    def test_code_with_spaces_is_accepted(self):
+        self.start()
+        code = self.sent_code()
+
+        self.confirm(f" {code[:3]} {code[3:]} ")
+
+        self.assertIsNotNone(self.student())
+
+    def test_second_login_needs_only_email_and_password(self):
+        self.start()
+        self.confirm(self.sent_code())
+        self.client.logout()
+        mail.outbox.clear()
+
+        response = self.client.post(reverse("login"), {
+            "username": self.EMAIL, "password": PASSWORD,
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(mail.outbox, [])
+
+    def test_wrong_code_is_counted_and_blocks_after_limit(self):
+        self.start()
+        right = self.sent_code()
+        wrong = "000000" if right != "000000" else "111111"
+
+        for _ in range(reg.MAX_CODE_ATTEMPTS - 1):
+            self.assertContains(self.confirm(wrong), "Неверный код")
+
+        last = self.confirm(wrong)
+
+        self.assertRedirects(
+            last, reverse("register"), fetch_redirect_response=False
+        )
+        self.assertNotIn("registration", self.client.session)
+        self.assertIsNone(self.student())
+
+        # Верный код после блокировки уже не подходит
+        self.assertRedirects(
+            self.confirm(right), reverse("register"),
+            fetch_redirect_response=False,
+        )
+        self.assertIsNone(self.student())
+
+    def test_expired_code_is_rejected(self):
+        self.start()
+        later = reg.now() + reg.CODE_LIFETIME + 1
+
+        with mock.patch("schedule.registration.now", return_value=later):
+            response = self.confirm(self.sent_code())
+
+        self.assertRedirects(
+            response, reverse("register"), fetch_redirect_response=False
+        )
+        self.assertIsNone(self.student())
+
+    def test_resend_waits_then_replaces_code(self):
+        self.start()
+        first = self.sent_code()
+
+        page = self.client.post(
+            reverse("register_confirm"), {"action": "resend"}
+        )
+        self.assertContains(page, "чуть позже")
+        self.assertEqual(len(mail.outbox), 1)
+
+        later = reg.now() + reg.RESEND_COOLDOWN + 1
+
+        with mock.patch("schedule.registration.now", return_value=later):
+            response = self.client.post(
+                reverse("register_confirm"), {"action": "resend"}
+            )
+
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(len(mail.outbox), 2)
+            second = self.sent_code()
+
+            if first != second:
+                self.assertContains(self.confirm(first), "Неверный код")
+
+            self.confirm(second)
+
+        self.assertIsNotNone(self.student())
+
+    def test_resend_is_limited(self):
+        self.start()
+        moment = reg.now()
+
+        for step in range(1, reg.MAX_SENDS + 2):
+            moment += reg.RESEND_COOLDOWN + 1
+
+            with mock.patch("schedule.registration.now", return_value=moment):
+                self.client.post(
+                    reverse("register_confirm"), {"action": "resend"}
+                )
+
+        self.assertEqual(len(mail.outbox), reg.MAX_SENDS)
+
+    def test_cancel_clears_draft(self):
+        self.start()
+
+        response = self.client.post(
+            reverse("register_confirm"), {"action": "cancel"}
+        )
+
+        self.assertRedirects(
+            response, reverse("register"), fetch_redirect_response=False
+        )
+        self.assertNotIn("registration", self.client.session)
+
+    def test_email_taken_meanwhile_is_not_overwritten(self):
+        self.start()
+        code = self.sent_code()
+        other = get_user_model().objects.create_user(
+            self.EMAIL, password="Other-pass-9876"
+        )
+
+        response = self.confirm(code)
+
+        self.assertRedirects(
+            response, reverse("login"), fetch_redirect_response=False
+        )
+        self.assertTrue(
+            get_user_model().objects.get(pk=other.pk).check_password(
+                "Other-pass-9876"
+            )
+        )
+
+    def test_group_removed_meanwhile(self):
+        extra = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        self.start(group=extra.pk)
+        code = self.sent_code()
+        extra.delete()
+
+        response = self.confirm(code)
+
+        self.assertRedirects(
+            response, reverse("register"), fetch_redirect_response=False
+        )
+        self.assertIsNone(self.student())
+
+    def test_registered_student_cannot_become_staff(self):
+        self.start(is_staff="on", role="admin")
+        self.confirm(self.sent_code())
+
+        user = self.student()
+
+        self.assertFalse(user.is_staff)
+        self.assertEqual(user_role(user), "student")
+
+    def test_old_pages_are_gone(self):
+        self.assertFalse(
+            (Path(settings.BASE_DIR) / "schedule" / "templates"
+             / "code.html").exists()
+        )
+
+
+class PasswordResetTests(BaseTestCase):
+    """Восстановление пароля только по почте: письмо, ссылка, новый пароль."""
+
+    EMAIL = "resetme@gmail.com"
+    NEW = "Brand-New-Pass-4321"
+
+    def setUp(self):
+        cache.clear()
+        self.member = get_user_model().objects.create_user(
+            self.EMAIL, email=self.EMAIL, password=PASSWORD,
+            first_name="Пётр",
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def ask(self, address=None):
+        return self.client.post(
+            reverse("password_reset"), {"email": address or self.EMAIL}
+        )
+
+    def link(self, index=0):
+        match = re.search(
+            r"http://testserver(/password-reset/\S+)", mail.outbox[index].body
+        )
+
+        return match.group(1)
+
+    def open_link(self, url):
+        return self.client.get(url, follow=True)
+
+    def set_password(self, response, first, second=None):
+        return self.client.post(response.redirect_chain[-1][0], {
+            "new_password1": first,
+            "new_password2": second or first,
+        })
+
+    def test_login_page_links_to_reset(self):
+        self.assertContains(
+            self.client.get(reverse("login")), reverse("password_reset")
+        )
+
+    def test_known_address_gets_one_letter_with_link(self):
+        response = self.ask()
+
+        self.assertRedirects(
+            response, reverse("password_reset_done"),
+            fetch_redirect_response=False,
+        )
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.EMAIL])
+        self.assertIn("один час", mail.outbox[0].body)
+        self.assertTrue(self.link().startswith("/password-reset/"))
+
+    def test_answer_is_the_same_for_unknown_address(self):
+        known = self.ask()
+        unknown = self.ask("nobodyhere@gmail.com")
+
+        self.assertEqual(known["Location"], unknown["Location"])
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_address_spelling_does_not_matter(self):
+        self.ask("  ResetMe@Gmail.com ")
+
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_not_gmail_is_rejected(self):
+        for bad in ("someone@yahoo.com", "bad", ""):
+            self.assertEqual(self.ask(bad).status_code, 200, bad)
+
+        self.assertEqual(mail.outbox, [])
+
+    def test_disabled_and_passwordless_users_get_nothing(self):
+        self.member.is_active = False
+        self.member.save()
+        self.ask()
+
+        self.member.is_active = True
+        self.member.set_unusable_password()
+        self.member.save()
+        self.ask()
+
+        self.assertEqual(mail.outbox, [])
+
+    def test_requests_are_throttled_silently(self):
+        for _ in range(5):
+            self.assertEqual(self.ask().status_code, 302)
+
+        self.assertEqual(len(mail.outbox), 3)
+
+    def test_full_flow_sets_new_password_and_notifies(self):
+        self.ask()
+
+        page = self.open_link(self.link())
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Новый пароль")
+
+        done = self.set_password(page, self.NEW)
+
+        self.assertRedirects(
+            done, reverse("password_reset_complete"),
+            fetch_redirect_response=False,
+        )
+        self.assertIsNone(authenticate(username=self.EMAIL, password=PASSWORD))
+        self.assertIsNotNone(
+            authenticate(username=self.EMAIL, password=self.NEW)
+        )
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertEqual(mail.outbox[1].to, [self.EMAIL])
+        self.assertIn("пароль изменён", mail.outbox[1].subject)
+
+    def test_link_works_once(self):
+        self.ask()
+        url = self.link()
+        page = self.open_link(url)
+        self.set_password(page, self.NEW)
+
+        again = Client().get(url, follow=True)
+
+        self.assertContains(again, "Ссылка не подходит")
+
+    def test_bad_new_passwords_change_nothing(self):
+        self.ask()
+        page = self.open_link(self.link())
+
+        for first, second in (
+            (self.NEW, "Different-pass-77"), ("12345678", "12345678"),
+            ("short", "short"),
+        ):
+            response = self.set_password(page, first, second)
+
+            self.assertEqual(response.status_code, 200, first)
+
+        self.assertIsNotNone(
+            authenticate(username=self.EMAIL, password=PASSWORD)
+        )
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_garbage_and_expired_links_are_refused(self):
+        self.assertContains(
+            self.client.get(
+                "/password-reset/abc/def-ghi/", follow=True
+            ),
+            "Ссылка не подходит",
+        )
+
+        self.ask()
+        url = self.link()
+
+        with override_settings(PASSWORD_RESET_TIMEOUT=-1):
+            self.assertContains(
+                Client().get(url, follow=True), "Ссылка не подходит"
+            )
+
+    def test_old_sessions_are_closed_after_reset(self):
+        other = Client()
+        other.force_login(self.member)
+        self.assertEqual(other.get(reverse("groups")).status_code, 200)
+
+        self.ask()
+        page = self.open_link(self.link())
+        self.set_password(page, self.NEW)
+
+        self.assertEqual(other.get(reverse("groups")).status_code, 302)
+
+    def test_link_lifetime_is_one_hour(self):
+        self.assertEqual(settings.PASSWORD_RESET_TIMEOUT, 60 * 60)
+
+
+class RoomTests(BaseTestCase):
+    """Кабинеты: у группы, особый у пары, конфликт в одной смене."""
+
+    WEEK = "2026-10-19"
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        self.edit_url = reverse("group_edit", args=[self.group.pk])
+        self.second = Group.objects.create(
+            group_name="ПО-102", group_course=self.course, shift=self.shift,
+        )
+
+    def post_edit(self, **extra):
+        data = {"cell_1_1": self.pair.pk}
+        data.update(extra)
+
+        return self.client.post(self.edit_url, data)
+
+    def schedule_html(self, who=None):
+        self.client.force_login(who or self.user)
+
+        with fake_today(MONDAY):
+            return self.client.get(
+                reverse("group_schedule", args=[self.group.pk]),
+                {"date": self.WEEK},
+            ).content.decode()
+
+    # --- модель и очистка ---
+
+    def test_room_defaults_to_empty_and_limit_is_20(self):
+        self.assertEqual(self.group.room, "")
+        self.assertEqual(Day.objects.first().room, "")
+        self.assertEqual(Group._meta.get_field("room").max_length, 20)
+        self.assertEqual(Day._meta.get_field("room").max_length, 20)
+
+    def test_clean_room(self):
+        from .rooms import clean_room, room_key
+
+        self.assertEqual(clean_room("  204   "), "204")
+        self.assertEqual(clean_room(""), "")
+        self.assertEqual(clean_room(None), "")
+        self.assertEqual(clean_room("Спортзал №1"), "Спортзал №1")
+        self.assertEqual(room_key(" 3А  "), room_key("3а"))
+
+        for bad in ("я" * 21, "<b>", "204;DROP", "‮"):
+            with self.assertRaises(ValidationError, msg=bad):
+                clean_room(bad)
+
+    # --- редактор расписания ---
+
+    def test_editor_saves_group_room_and_special_room(self):
+        response = self.post_edit(group_room="204", room_1_1="Спортзал")
+
+        self.assertRedirects(response, self.edit_url)
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.room, "204")
+        self.assertEqual(
+            Day.objects.get(group=self.group, weekday_id=1, pair_number=1).room,
+            "Спортзал",
+        )
+
+    def test_special_room_equal_to_group_room_is_not_an_exception(self):
+        self.post_edit(group_room="204", room_1_1=" 204 ")
+
+        self.assertEqual(
+            Day.objects.get(group=self.group, weekday_id=1, pair_number=1).room,
+            "",
+        )
+
+    def test_old_form_without_room_fields_keeps_rooms(self):
+        self.group.room = "204"
+        self.group.save()
+        Day.objects.filter(group=self.group).update(room="Зал")
+
+        self.post_edit()
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.room, "204")
+        self.assertEqual(Day.objects.get(group=self.group).room, "Зал")
+
+    def test_empty_field_clears_rooms(self):
+        self.group.room = "204"
+        self.group.save()
+        Day.objects.filter(group=self.group).update(room="Зал")
+
+        self.post_edit(group_room="", room_1_1="")
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.room, "")
+        self.assertEqual(Day.objects.get(group=self.group).room, "")
+
+    def test_same_room_in_same_shift_is_an_error(self):
+        self.second.room = "204"
+        self.second.save()
+
+        response = self.post_edit(group_room=" 204 ")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "уже занят группой ПО-102")
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.room, "")
+
+    def test_same_room_in_other_shift_is_fine(self):
+        other_shift = Shift.objects.create(shift_id=2)
+        self.second.shift = other_shift
+        self.second.room = "204"
+        self.second.save()
+
+        response = self.post_edit(group_room="204")
+
+        self.assertRedirects(response, self.edit_url)
+
+    def test_bad_room_is_rejected_and_nothing_is_saved(self):
+        response = self.post_edit(group_room="204", room_1_1="я" * 25)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "не больше 20")
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.room, "")
+
+    def test_editor_form_shows_rooms(self):
+        self.group.room = "204"
+        self.group.save()
+        Day.objects.filter(group=self.group).update(room="Зал")
+
+        response = self.client.get(self.edit_url)
+
+        self.assertContains(response, 'name="group_room"')
+        self.assertContains(response, 'value="204"')
+        self.assertContains(response, 'name="room_1_1"')
+        self.assertContains(response, 'value="Зал"')
+
+    # --- Кузня ---
+
+    def test_workshop_group_form_saves_room_and_checks_conflict(self):
+        self.second.room = "301"
+        self.second.save()
+
+        base = {
+            "action": "add_group", "group-group_course": 1,
+            "group-shift": self.shift.pk, "group-group_tag": "",
+            "group-group_curator": "",
+        }
+
+        busy = self.client.post(reverse("workshop"), {
+            **base, "group-group_name": "ПО-103", "group-room": "301",
+        }, follow=True)
+
+        self.assertContains(busy, "уже занят группой ПО-102")
+        self.assertFalse(Group.objects.filter(group_name="ПО-103").exists())
+
+        self.client.post(reverse("workshop"), {
+            **base, "group-group_name": "ПО-103", "group-room": " 305 ",
+        }, follow=True)
+
+        self.assertEqual(Group.objects.get(group_name="ПО-103").room, "305")
+
+    # --- показ ---
+
+    def test_schedule_shows_group_room_and_special_room(self):
+        self.group.room = "204"
+        self.group.save()
+
+        self.assertIn("каб. 204", self.schedule_html())
+
+        Day.objects.filter(group=self.group).update(room="Спортзал")
+        html = self.schedule_html()
+
+        self.assertIn("Спортзал", html)
+        self.assertNotIn("каб. 204", html)
+
+    def test_schedule_without_room_has_no_badge(self):
+        self.assertNotIn('class="pair-room"', self.schedule_html())
+
+    def test_teacher_schedule_shows_group_room(self):
+        self.group.room = "204"
+        self.group.save()
+        self.client.force_login(self.admin)
+
+        with fake_today(MONDAY):
+            html = self.client.get(
+                reverse("teachers"),
+                {"teacher": self.teacher.pk, "date": self.WEEK},
+            ).content.decode()
+
+        self.assertIn("каб. 204", html)
+
+    def test_moved_in_lesson_uses_group_room(self):
+        from .changes import describe_moved_in
+
+        self.group.room = "204"
+        change = ScheduleChange(group=self.group, pair=self.pair)
+        change.calendar = Calendar(date=date(2026, 10, 19))
+        change.old_pair_number = 1
+
+        self.assertEqual(describe_moved_in(change)["room"], "204")
+
+    def test_room_label_filter(self):
+        from .templatetags.people import room_label
+
+        self.assertEqual(room_label("204"), "каб. 204")
+        self.assertEqual(room_label("Спортзал"), "Спортзал")
+        self.assertEqual(room_label(""), "")
+
+    def test_scripts_match_model(self):
+        base = Path(settings.BASE_DIR) / "database"
+        create = (base / "create_db.py").read_text(encoding="utf-8")
+        script = (base / "add_rooms.py").read_text(encoding="utf-8")
+
+        self.assertEqual(create.count("room VARCHAR(20) NOT NULL DEFAULT ''"), 2)
+        self.assertEqual(script.count("ADD COLUMN IF NOT EXISTS room"), 2)
+        self.assertNotIn("DROP", script)
+        self.assertNotIn("DELETE", script)
+
+
+class DutyTests(BaseTestCase):
+    """Дежурные: день недели и смена, без чётности; Кузня, группы, календарь."""
+
+    WEEK = "2026-10-19"   # понедельник
+
+    def setUp(self):
+        self.client.force_login(self.admin)
+        self.other = make_teacher("Петров П. П.", "teacherpetrov@gmail.com")
+
+    def add(self, **extra):
+        data = {
+            "action": "add_duty",
+            "duty-shift": self.shift.pk,
+            "duty-weekday": 1,
+            "duty-teacher": self.teacher.pk,
+        }
+        data.update(extra)
+
+        return self.client.post(reverse("workshop"), data, follow=True)
+
+    def duty(self, weekday=1, teacher=None):
+        return Duty.objects.create(
+            shift=self.shift, weekday=weekday, teacher=teacher or self.teacher
+        )
+
+    # --- Кузня ---
+
+    def test_workshop_has_duty_card(self):
+        response = self.client.get(reverse("workshop"))
+
+        self.assertContains(response, "Дежурные")
+        self.assertContains(response, "edit=duty")
+        self.assertFalse(response.context["cards"]["duty"]["editing"])
+
+    def test_add_duty(self):
+        self.add()
+
+        record = Duty.objects.get()
+        self.assertEqual(
+            (record.shift_id, record.weekday, record.teacher_id),
+            (self.shift.pk, 1, self.teacher.pk),
+        )
+
+    def test_several_teachers_on_one_day_are_allowed(self):
+        self.add()
+        self.add(**{"duty-teacher": self.other.pk})
+
+        self.assertEqual(Duty.objects.count(), 2)
+
+    def test_same_duty_twice_is_rejected_with_clear_text(self):
+        self.add()
+        response = self.add()
+
+        self.assertEqual(Duty.objects.count(), 1)
+        self.assertContains(response, "уже дежурит в этот день")
+
+    def test_bad_values_are_rejected(self):
+        placeholder = Teacher.objects.create(teacher_name="Без учётки")
+
+        for extra in (
+            {"duty-weekday": 7}, {"duty-weekday": 0}, {"duty-weekday": "x"},
+            {"duty-weekday": ""}, {"duty-shift": 99},
+            {"duty-teacher": placeholder.pk}, {"duty-teacher": 99999},
+        ):
+            self.add(**extra)
+
+        self.assertFalse(Duty.objects.exists())
+
+    def test_only_staff_can_add(self):
+        self.client.force_login(self.user)
+
+        response = self.add()
+
+        self.assertFalse(Duty.objects.exists())
+        self.assertNotEqual(response.status_code, 200)
+
+    def test_edit_and_delete(self):
+        record = self.duty()
+        url = reverse("workshop")
+        fields = {"edit": "duty", "item": record.pk}
+
+        listing = self.client.get(
+            reverse("workshop"), {"edit": "duty"}
+        ).context["cards"]["duty"]["items"]
+        self.assertEqual(len(listing), 1)
+        self.assertIn("Понедельник", listing[0]["label"])
+
+        self.client.post(url, {
+            "action": "update_item", **fields,
+            "duty-shift": self.shift.pk, "duty-weekday": 3,
+            "duty-teacher": self.other.pk,
+        })
+        record.refresh_from_db()
+        self.assertEqual((record.weekday, record.teacher_id), (3, self.other.pk))
+
+        response = self.client.post(url, {"action": "delete_item", **fields})
+        self.assertContains(response, "Удалится только это дежурство")
+        self.assertTrue(Duty.objects.exists())
+
+        self.client.post(url, {"action": "delete_confirmed", **fields})
+        self.assertFalse(Duty.objects.exists())
+
+    def test_editing_without_change_is_not_a_duplicate(self):
+        record = self.duty()
+
+        self.client.post(reverse("workshop"), {
+            "action": "update_item", "edit": "duty", "item": record.pk,
+            "duty-shift": self.shift.pk, "duty-weekday": 1,
+            "duty-teacher": self.teacher.pk,
+        })
+
+        self.assertEqual(Duty.objects.count(), 1)
+
+    def test_teacher_removal_removes_duty(self):
+        self.duty()
+        self.teacher.delete()
+
+        self.assertFalse(Duty.objects.exists())
+
+    # --- показ ---
+
+    def groups_html(self, date_iso):
+        self.client.force_login(self.user)
+
+        with fake_today(MONDAY):
+            return self.client.get(
+                reverse("groups"), {"date": date_iso}
+            ).content.decode()
+
+    def test_groups_page_shows_duty_of_the_weekday(self):
+        self.duty(weekday=1)
+        self.duty(weekday=2, teacher=self.other)
+
+        monday = self.groups_html(self.WEEK)
+        tuesday = self.groups_html("2026-10-20")
+
+        self.assertIn("Дежурные:", monday)
+        self.assertIn("1 смена", monday)
+        self.assertIn("Иванов", monday)
+        self.assertNotIn("Петров", monday)
+        self.assertIn("Петров", tuesday)
+
+    def test_groups_page_has_no_duty_line_without_duty(self):
+        self.assertNotIn("Дежурные:", self.groups_html(self.WEEK))
+
+    def test_no_duty_on_sunday(self):
+        self.duty(weekday=1)
+
+        self.assertNotIn("Дежурные:", self.groups_html("2026-10-25"))
+
+    def test_calendar_shows_table_and_day_tooltips(self):
+        self.duty(weekday=1)
+        self.client.force_login(self.user)
+
+        with fake_today(MONDAY):
+            html = self.client.get(
+                reverse("calendar"), {"year": 2026, "month": 10}
+            ).content.decode()
+
+        self.assertIn("Дежурные преподаватели", html)
+        self.assertIn("Понедельник", html)
+        self.assertIn('title="Дежурные. 1 смена:', html)
+        # Подсказку получают только понедельники (на экране их 5; праздничный
+        # понедельник, если он случится, подсказку не получает)
+        self.assertGreaterEqual(html.count('title="Дежурные. '), 4)
+        self.assertLessEqual(html.count('title="Дежурные. '), 5)
+
+    def test_calendar_without_duty_has_no_table(self):
+        self.client.force_login(self.user)
+
+        with fake_today(MONDAY):
+            html = self.client.get(
+                reverse("calendar"), {"year": 2026, "month": 10}
+            ).content.decode()
+
+        self.assertNotIn("Дежурные преподаватели", html)
+        self.assertNotIn('title="Дежурные.', html)
+
+    def test_duty_text_helper(self):
+        from .duty import duty_for_weekday, duty_text
+
+        self.duty(weekday=4)
+        self.duty(weekday=4, teacher=self.other)
+
+        text = duty_text(duty_for_weekday(4))
+
+        self.assertTrue(text.startswith("1 смена: "))
+        self.assertIn(self.other.teacher_name, text)
+        self.assertEqual(duty_for_weekday(5), [])
+
+    def test_scripts_match_model(self):
+        base = Path(settings.BASE_DIR) / "database"
+        create = (base / "create_db.py").read_text(encoding="utf-8")
+        script = (base / "add_duty.py").read_text(encoding="utf-8")
+
+        for text in (create, script):
+            self.assertIn('CREATE TABLE IF NOT EXISTS "Duty"', text)
+            self.assertIn("CHECK (weekday BETWEEN 1 AND 6)", text)
+            self.assertIn("unique_duty_shift_weekday_teacher", text)
+
+        self.assertNotIn("DROP", script)
+
+
+class WeekBase(BaseTestCase):
+    """Общее для проверок верхней и нижней недели.
+
+    Семестр с 1 сентября: неделя 12 октября — верхняя, 19 октября — нижняя.
+    В слоте «понедельник, пара 1» вместо обычной пары стоят две:
+    «Математика» (верхняя) и «Физика» (нижняя).
+    """
+
+    UPPER_WEEK = date(2026, 10, 12)
+    LOWER_WEEK = date(2026, 10, 19)
+
+    def setUp(self):
+        self.semester = Semester.objects.create(
+            semester_number=1,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 12, 31),
+        )
+        self.physics = make_pair(self.group, self.teacher2(), "Физика")
+        Day.objects.filter(group=self.group).delete()
+        self.upper = self.put(self.pair, 1)
+        self.lower = self.put(self.physics, 2)
+
+    def teacher2(self):
+        return make_teacher("Петров П. П.", "teacherpetrov@gmail.com")
+
+    def put(self, pair, week, group=None, number=1, weekday=1):
+        return Day.objects.create(
+            group=group or self.group,
+            pair=pair,
+            pair_number=number,
+            weekday=Weekday.objects.get(pk=weekday),
+            week=week,
+        )
+
+
+class WeekKindTests(WeekBase):
+    def test_no_semester_means_upper(self):
+        from .weeks import WEEK_UPPER, week_kind
+
+        Semester.objects.all().delete()
+
+        self.assertEqual(week_kind(self.LOWER_WEEK), WEEK_UPPER)
+
+    def test_first_week_is_upper_and_they_alternate(self):
+        from .weeks import WEEK_LOWER, WEEK_UPPER, week_kind
+
+        self.assertEqual(week_kind(date(2026, 9, 1)), WEEK_UPPER)
+        self.assertEqual(week_kind(date(2026, 9, 6)), WEEK_UPPER)
+        self.assertEqual(week_kind(date(2026, 9, 7)), WEEK_LOWER)
+        self.assertEqual(week_kind(self.UPPER_WEEK), WEEK_UPPER)
+        self.assertEqual(week_kind(self.LOWER_WEEK), WEEK_LOWER)
+
+    def test_whole_week_has_one_kind(self):
+        from .weeks import week_kind
+
+        kinds = {
+            week_kind(self.LOWER_WEEK + timedelta(days=offset))
+            for offset in range(7)
+        }
+
+        self.assertEqual(len(kinds), 1)
+
+    def test_swap_flips_the_weeks(self):
+        from .weeks import WEEK_LOWER, WEEK_UPPER, week_kind
+
+        self.semester.swap_weeks = True
+        self.semester.save()
+
+        self.assertEqual(week_kind(date(2026, 9, 1)), WEEK_LOWER)
+        self.assertEqual(week_kind(self.LOWER_WEEK), WEEK_UPPER)
+
+    def test_date_outside_semesters_uses_the_nearest_one(self):
+        from .weeks import WEEK_LOWER, WEEK_UPPER, week_kind
+
+        # Каникулы после семестра: счёт недель идёт дальше
+        self.assertIn(
+            week_kind(date(2027, 1, 20)), (WEEK_UPPER, WEEK_LOWER)
+        )
+        # До начала семестра — тоже от его первой недели
+        self.assertEqual(week_kind(date(2026, 8, 25)), WEEK_LOWER)
+
+    def test_compatible(self):
+        from .weeks import compatible
+
+        self.assertTrue(compatible(0, 0))
+        self.assertTrue(compatible(0, 1))
+        self.assertTrue(compatible(2, 0))
+        self.assertTrue(compatible(1, 1))
+        self.assertFalse(compatible(1, 2))
+
+    def test_model_allows_both_weeks_but_not_duplicates(self):
+        from django.db import IntegrityError, transaction
+
+        self.assertEqual(Day.objects.filter(group=self.group).count(), 2)
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.put(self.physics, 2)
+
+    def test_model_rejects_unknown_week(self):
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.put(self.pair, 3, number=2)
+
+    def test_scripts_match_model(self):
+        base = Path(settings.BASE_DIR) / "database"
+        create = (base / "create_db.py").read_text(encoding="utf-8")
+        script = (base / "add_weeks.py").read_text(encoding="utf-8")
+
+        for text in (create, script):
+            self.assertIn("unique_group_weekday_pair_week", text)
+            self.assertIn("day_week_range", text)
+            self.assertIn("swap_weeks", text)
+
+        self.assertIn("ADD COLUMN IF NOT EXISTS week", script)
+        self.assertNotIn("DROP TABLE", script)
+        self.assertNotIn("DELETE", script)
+
+
+class WeekScheduleTests(WeekBase):
+    def setUp(self):
+        super().setUp()
+        self.client.force_login(self.user)
+
+    def halves(self, html):
+        """Половинки ячейки: [(текст, текущая неделя)]."""
+        parts = re.split(r'class="pair-half(?=[ "])', html)[1:]
+
+        return [
+            (part.split("</article>")[0], part.startswith(" is-current"))
+            for part in parts
+        ]
+
+    def group_page(self, week):
+        with fake_today(week):
+            return self.client.get(
+                reverse("group_schedule", args=[self.group.pk]),
+                {"date": week.isoformat()},
+            ).content.decode()
+
+    def test_both_halves_are_shown(self):
+        html = self.group_page(self.LOWER_WEEK)
+
+        self.assertIn("Математика", html)
+        self.assertIn("Физика", html)
+        self.assertEqual(len(self.halves(html)), 2)
+
+    def test_current_week_half_is_highlighted(self):
+        lower = self.halves(self.group_page(self.LOWER_WEEK))
+        upper = self.halves(self.group_page(self.UPPER_WEEK))
+
+        self.assertEqual([flag for _text, flag in lower].count(True), 1)
+        current = [text for text, flag in lower if flag][0]
+        self.assertIn("Физика", current)
+        self.assertNotIn("Математика", current)
+
+        current = [text for text, flag in upper if flag][0]
+        self.assertIn("Математика", current)
+        self.assertNotIn("Физика", current)
+
+    def test_window_is_shown_as_window(self):
+        self.upper.delete()
+
+        html = self.group_page(self.UPPER_WEEK)
+        halves = self.halves(html)
+
+        self.assertEqual(len(halves), 2)
+        self.assertIn("окно", halves[0][0])
+        self.assertTrue(halves[0][1])
+        self.assertIn("Физика", halves[1][0])
+
+    def test_plain_cell_has_no_halves(self):
+        self.upper.delete()
+        self.lower.delete()
+        self.put(self.pair, 0)
+
+        html = self.group_page(self.LOWER_WEEK)
+
+        self.assertNotIn('class="pair-half', html)
+        self.assertIn("Математика", html)
+
+    def test_overview_shows_both_halves(self):
+        with fake_today(self.LOWER_WEEK):
+            html = self.client.get(
+                reverse("groups"), {"date": self.LOWER_WEEK.isoformat()}
+            ).content.decode()
+
+        self.assertIn("Математика", html)
+        self.assertIn("Физика", html)
+        self.assertEqual(len(self.halves(html)), 2)
+
+    def test_edit_mode_has_actions_only_on_current_half(self):
+        self.client.force_login(self.admin)
+
+        with fake_today(self.LOWER_WEEK):
+            html = self.client.get(
+                reverse("group_schedule", args=[self.group.pk]),
+                {"date": self.LOWER_WEEK.isoformat(), "edit": 1},
+            ).content.decode()
+
+        halves = self.halves(html)
+
+        self.assertEqual(len(halves), 2)
+
+        for text, current in halves:
+            self.assertEqual("pair-actions" in text, current)
+
+    def test_cancel_applies_to_current_week_pair(self):
+        self.client.force_login(self.admin)
+
+        with fake_today(self.LOWER_WEEK):
+            response = self.client.post(
+                reverse("group_change", args=[self.group.pk]),
+                {"kind": "cancel", "date": self.LOWER_WEEK.isoformat(),
+                 "number": 1},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        change = ScheduleChange.objects.get()
+        self.assertEqual(change.pair_id, self.physics.pk)
+
+    def test_teacher_sees_only_the_current_week(self):
+        from .changes import teacher_lessons
+
+        def lessons(teacher, day):
+            records = list(Day.objects.filter(
+                pair__teacher=teacher
+            ).select_related("group", "group__shift", "pair", "pair__teacher"))
+
+            return teacher_lessons(teacher.pk, [day], records, [])[day]
+
+        monday_lower = self.LOWER_WEEK
+        monday_upper = self.UPPER_WEEK
+
+        self.assertEqual(lessons(self.teacher, monday_upper)[0]["subject"],
+                         "Математика")
+        self.assertEqual(lessons(self.teacher, monday_lower), [])
+        self.assertEqual(lessons(self.physics.teacher, monday_lower)[0]
+                         ["subject"], "Физика")
+        self.assertEqual(lessons(self.physics.teacher, monday_upper), [])
+
+    def test_teacher_conflict_ignores_other_week(self):
+        from .changes import teacher_conflict
+
+        # Математика стоит на верхней неделе: на нижней преподаватель свободен
+        self.assertIsNone(
+            teacher_conflict(self.teacher.pk, self.LOWER_WEEK, 1, [])
+        )
+        self.assertEqual(
+            teacher_conflict(self.teacher.pk, self.UPPER_WEEK, 1, []),
+            "А-01",
+        )
+
+    def test_pair_teacher_conflict_respects_weeks(self):
+        from .workshop_edit import pair_teacher_conflict
+
+        # Физика (нижняя) → преподаватель Математики (верхняя): не пересекаются
+        self.assertEqual(
+            pair_teacher_conflict(self.physics, self.teacher), ""
+        )
+
+        other = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        self.put(make_pair(other, self.teacher, "Химия"), 2, group=other)
+
+        # А у Химии нижняя неделя: теперь пересечение есть
+        self.assertIn(
+            "Б-02", pair_teacher_conflict(self.physics, self.teacher)
+        )
+
+
+class WeekDiaryTests(WeekBase):
+    def test_week_lessons_follow_the_week(self):
+        from diary.lessons import week_lessons
+
+        def subjects(monday):
+            week = week_lessons(self.group.pk, monday)
+
+            return [lesson["subject"] for lesson in week[0][1]]
+
+        self.assertEqual(subjects(self.UPPER_WEEK), ["Математика"])
+        self.assertEqual(subjects(self.LOWER_WEEK), ["Физика"])
+
+    def test_teacher_day_lessons_follow_the_week(self):
+        from diary.lessons import teacher_day_lessons
+
+        self.assertEqual(
+            [item["subject"] for item in
+             teacher_day_lessons(self.teacher.pk, self.UPPER_WEEK)],
+            ["Математика"],
+        )
+        self.assertEqual(
+            teacher_day_lessons(self.teacher.pk, self.LOWER_WEEK), []
+        )
+        self.assertEqual(
+            [item["subject"] for item in
+             teacher_day_lessons(self.physics.teacher.pk, self.LOWER_WEEK)],
+            ["Физика"],
+        )
+
+    def test_swap_moves_lessons_to_the_other_week(self):
+        from diary.lessons import week_lessons
+
+        self.semester.swap_weeks = True
+        self.semester.save()
+
+        week = week_lessons(self.group.pk, self.UPPER_WEEK)
+
+        self.assertEqual([x["subject"] for x in week[0][1]], ["Физика"])
+
+
+class WeekEditorTests(WeekBase):
+    def setUp(self):
+        super().setUp()
+        self.client.force_login(self.admin)
+        self.url = reverse("group_edit", args=[self.group.pk])
+
+    def slot(self):
+        return {
+            day.week: day for day in Day.objects.filter(
+                group=self.group, weekday_id=1, pair_number=1
+            )
+        }
+
+    def post(self, **data):
+        return self.client.post(self.url, data)
+
+    def test_editor_shows_both_cells_of_a_split_slot(self):
+        response = self.client.get(self.url)
+        row = response.context["edit_days"][0]["rows"][0]
+
+        self.assertTrue(row["split"])
+        self.assertEqual(row["selected"], self.pair.pk)
+        self.assertEqual(row["selected2"], self.physics.pk)
+        self.assertContains(response, 'name="split_1_1"')
+        self.assertContains(response, 'name="cell2_1_1"')
+        self.assertContains(response, "нижняя неделя")
+
+    def test_plain_slot_is_not_split(self):
+        self.upper.delete()
+        self.lower.delete()
+        self.put(self.pair, 0)
+
+        row = self.client.get(self.url).context["edit_days"][0]["rows"][0]
+
+        self.assertFalse(row["split"])
+
+    def test_split_a_plain_cell(self):
+        self.upper.delete()
+        self.lower.delete()
+        self.put(self.pair, 0)
+
+        response = self.post(
+            cell_1_1=self.pair.pk, cell2_1_1=self.physics.pk, split_1_1="1"
+        )
+
+        self.assertEqual(response.status_code, 302)
+        slot = self.slot()
+        self.assertEqual(set(slot), {1, 2})
+        self.assertEqual(slot[1].pair_id, self.pair.pk)
+        self.assertEqual(slot[2].pair_id, self.physics.pk)
+
+    def test_unsplit_returns_to_every_week(self):
+        response = self.post(
+            cell_1_1=self.pair.pk, cell2_1_1=self.physics.pk, split_1_1="0"
+        )
+
+        self.assertEqual(response.status_code, 302)
+        slot = self.slot()
+        self.assertEqual(set(slot), {0})
+        self.assertEqual(slot[0].pair_id, self.pair.pk)
+
+    def test_same_pair_in_both_halves_is_refused(self):
+        response = self.post(
+            cell_1_1=self.pair.pk, cell2_1_1=self.pair.pk, split_1_1="1"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "должны отличаться")
+        self.assertEqual(set(self.slot()), {1, 2})
+        self.assertEqual(self.slot()[2].pair_id, self.physics.pk)
+
+    def test_window_on_the_upper_week(self):
+        response = self.post(
+            cell_1_1="", cell2_1_1=self.physics.pk, split_1_1="1"
+        )
+
+        self.assertEqual(response.status_code, 302)
+        slot = self.slot()
+        self.assertEqual(set(slot), {2})
+
+    def test_window_on_the_lower_week(self):
+        response = self.post(
+            cell_1_1=self.pair.pk, cell2_1_1="", split_1_1="1"
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(set(self.slot()), {1})
+        row = self.client.get(self.url).context["edit_days"][0]["rows"][0]
+        self.assertTrue(row["split"])
+        self.assertIsNone(row["selected2"])
+
+    def test_clearing_both_removes_the_slot(self):
+        self.post(cell_1_1="", cell2_1_1="", split_1_1="1")
+
+        self.assertEqual(self.slot(), {})
+
+    def test_old_form_without_split_fields_keeps_the_lower_pair(self):
+        response = self.post(cell_1_1=self.pair.pk)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.slot()[2].pair_id, self.physics.pk)
+
+    def test_rooms_are_kept_per_week(self):
+        self.post(
+            cell_1_1=self.pair.pk, cell2_1_1=self.physics.pk, split_1_1="1",
+            room_1_1="301", room2_1_1="302",
+        )
+
+        slot = self.slot()
+
+        self.assertEqual(slot[1].room, "301")
+        self.assertEqual(slot[2].room, "302")
+
+    def test_error_keeps_what_was_typed(self):
+        response = self.post(
+            cell_1_1=self.pair.pk, cell2_1_1=self.pair.pk, split_1_1="1",
+            room2_1_1="Лаб",
+        )
+
+        row = response.context["edit_days"][0]["rows"][0]
+
+        self.assertTrue(row["split"])
+        self.assertEqual(row["room2"], "Лаб")
+
+    def test_teacher_warning_only_for_overlapping_weeks(self):
+        other = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        pair = make_pair(other, self.teacher, "Алгебра")
+        self.put(pair, 1, group=other)
+
+        # Математика (того же преподавателя) на нижней неделе — не мешает,
+        # на верхней — мешает
+        response = self.post(
+            cell_1_1=self.physics.pk, cell2_1_1=self.pair.pk, split_1_1="1"
+        )
+        warnings = [
+            str(m) for m in get_messages(response.wsgi_request)
+            if m.level == message_levels.WARNING
+        ]
+        self.assertEqual(warnings, [])
+
+        response = self.post(
+            cell_1_1=self.pair.pk, cell2_1_1=self.physics.pk, split_1_1="1"
+        )
+        warnings = [
+            str(m) for m in get_messages(response.wsgi_request)
+            if m.level == message_levels.WARNING
+        ]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Б-02", warnings[0])
+
+    def test_switching_modes_does_not_hit_the_unique_constraint(self):
+        for _ in range(2):
+            self.post(
+                cell_1_1=self.pair.pk, split_1_1="0"
+            )
+            self.assertEqual(set(self.slot()), {0})
+            self.post(
+                cell_1_1=self.pair.pk, cell2_1_1=self.physics.pk,
+                split_1_1="1",
+            )
+            self.assertEqual(set(self.slot()), {1, 2})
+
+
+class SemesterSwapTests(BaseTestCase):
+    def setUp(self):
+        self.client.force_login(self.admin)
+
+    def test_checkbox_is_on_the_card_and_saved(self):
+        response = self.client.get(reverse("workshop"))
+
+        self.assertContains(response, 'name="semester-swap_weeks"')
+        self.assertContains(response, "Первая неделя — нижняя")
+
+        data = semester_data(1, "2026-09-01", "2026-12-31")
+        data["semester-swap_weeks"] = "on"
+        self.client.post(
+            reverse("workshop"), {"action": "add_semester", **data}
+        )
+
+        self.assertTrue(Semester.objects.get().swap_weeks)
+
+    def test_default_is_upper_first(self):
+        self.client.post(reverse("workshop"), {
+            "action": "add_semester",
+            **semester_data(1, "2026-09-01", "2026-12-31"),
+        })
+
+        self.assertFalse(Semester.objects.get().swap_weeks)
+
+    def test_label_mentions_swap(self):
+        from .workshop_edit import item_label
+
+        semester = Semester.objects.create(
+            semester_number=2, start_date=date(2027, 2, 1),
+            end_date=date(2027, 6, 30), swap_weeks=True,
+        )
+
+        self.assertIn("нижняя", item_label("semester", semester))
+
+
+class WeekCsvTests(WeekBase):
+    HEAD = "Группа;День недели;Номер пары;Предмет;Преподаватель"
+
+    def load(self, text, **kw):
+        from .csv_io import import_csv
+
+        return import_csv("schedule", text.encode("utf-8"), **kw)
+
+    def test_export_has_week_and_room_columns(self):
+        from .csv_io import build_csv
+
+        text = build_csv("schedule").decode("utf-8-sig")
+        lines = text.strip().splitlines()
+
+        self.assertTrue(lines[0].endswith(";Неделя;Кабинет"))
+        self.assertIn(";верхняя;", text)
+        self.assertIn(";нижняя;", text)
+
+    def test_round_trip_changes_nothing(self):
+        from .csv_io import build_csv
+
+        report = self.load(build_csv("schedule").decode("utf-8-sig"))
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["unchanged"], 2)
+        self.assertEqual(Day.objects.filter(group=self.group).count(), 2)
+
+    def test_old_file_without_columns_means_every_week(self):
+        Day.objects.filter(group=self.group).delete()
+
+        report = self.load(
+            self.HEAD + "\nА-01;Понедельник;1;Математика;Иванов И. И.\n"
+        )
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["created"], 1)
+        self.assertEqual(Day.objects.get(group=self.group).week, 0)
+
+    def test_old_file_keeps_rooms(self):
+        Day.objects.filter(group=self.group).update(room="Лаб")
+
+        report = self.load(
+            self.HEAD + ";Неделя\nА-01;Понедельник;1;Математика;"
+            "Иванов И. И.;верхняя\n"
+        )
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(
+            Day.objects.get(group=self.group, week=1).room, "Лаб"
+        )
+
+    def test_weeks_and_rooms_are_loaded(self):
+        Day.objects.filter(group=self.group).delete()
+
+        report = self.load(
+            self.HEAD + ";Неделя;Кабинет\n"
+            "А-01;Понедельник;1;Математика;Иванов И. И.;верхняя;301\n"
+            "А-01;Понедельник;1;Физика;Петров П. П.;нижняя;302\n"
+        )
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["created"], 2)
+        days = {d.week: d for d in Day.objects.filter(group=self.group)}
+        self.assertEqual(days[1].room, "301")
+        self.assertEqual(days[2].room, "302")
+
+    def test_unknown_week_is_an_error(self):
+        report = self.load(
+            self.HEAD + ";Неделя\n"
+            "А-01;Понедельник;1;Математика;Иванов И. И.;третья\n"
+        )
+
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertIn("Неделя", report["errors"][0])
+
+    def test_mixing_every_week_with_halves_is_an_error(self):
+        report = self.load(
+            self.HEAD + "\nА-01;Понедельник;1;Математика;Иванов И. И.\n"
+        )
+
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertIn("другого вида недели", report["errors"][0])
+        self.assertEqual(Day.objects.filter(group=self.group).count(), 2)
+
+    def test_same_pair_on_both_weeks_is_an_error(self):
+        report = self.load(
+            self.HEAD + ";Неделя\n"
+            "А-01;Понедельник;1;Физика;Петров П. П.;верхняя\n"
+        )
+
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertIn("одна и та же пара", report["errors"][0])
+
+    def test_duplicate_row_with_same_week_is_an_error(self):
+        report = self.load(
+            self.HEAD + ";Неделя\n"
+            "А-01;Понедельник;1;Математика;Иванов И. И.;верхняя\n"
+            "А-01;Понедельник;1;Математика;Иванов И. И.;верхняя\n"
+        )
+
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertIn("повторяет", report["errors"][0])
+
+    def test_room_same_as_group_room_is_not_an_exception(self):
+        self.group.room = "204"
+        self.group.save()
+
+        self.load(
+            self.HEAD + ";Неделя;Кабинет\n"
+            "А-01;Понедельник;1;Математика;Иванов И. И.;верхняя;204\n"
+        )
+
+        self.assertEqual(
+            Day.objects.get(group=self.group, week=1).room, ""
+        )
+
+    def test_dry_run_changes_nothing(self):
+        Day.objects.filter(group=self.group, week=2).delete()
+
+        report = self.load(
+            self.HEAD + ";Неделя\n"
+            "А-01;Понедельник;1;Физика;Петров П. П.;нижняя\n",
+            dry_run=True,
+        )
+
+        self.assertEqual(report["created"], 1)
+        self.assertEqual(Day.objects.filter(group=self.group).count(), 1)
+
+    def test_teacher_warning_ignores_other_weeks(self):
+        other = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        make_pair(other, self.teacher, "Математика")
+
+        # Нижняя неделя Б-02 и верхняя А-01 друг другу не мешают
+        report = self.load(
+            self.HEAD + ";Неделя\n"
+            "Б-02;Понедельник;1;Математика;Иванов И. И.;нижняя\n"
+        )
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["warnings"], [])
+
+    def test_teacher_warning_for_overlapping_weeks(self):
+        other = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        make_pair(other, self.teacher, "Математика")
+
+        report = self.load(
+            self.HEAD + ";Неделя\n"
+            "Б-02;Понедельник;1;Математика;Иванов И. И.;каждая\n"
+        )
+
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(len(report["warnings"]), 1)
+        self.assertIn("Б-02", report["warnings"][0])
+
+
+class ReferenceTests(BaseTestCase):
+    """Справочник: сырые таблицы справочных данных."""
+
+    def setUp(self):
+        self.client.force_login(self.user)
+        self.url = reverse("reference")
+
+    def rows(self, tab, user=None):
+        if user is not None:
+            self.client.force_login(user)
+
+        response = self.client.get(self.url, {"tab": tab})
+
+        self.assertEqual(response.status_code, 200)
+
+        return response, response.context["rows"]
+
+    def texts(self, row):
+        return [cell["text"] for cell in row["cells"]]
+
+    def student(self, name="stud1"):
+        from .models import ROLE_STUDENT
+
+        user = get_user_model().objects.create_user(name, password=PASSWORD)
+        Profile.objects.create(
+            user=user, role=ROLE_STUDENT, group=self.group
+        )
+
+        return user
+
+    # --- доступ ---
+
+    def test_anonymous_is_redirected_to_login(self):
+        self.client.logout()
+        response = self.client.get(self.url)
+
+        self.assertRedirects(
+            response, f"{reverse('login')}?next={self.url}"
+        )
+
+    def test_every_role_can_open_every_tab(self):
+        from .reference import TABS
+
+        for user in (self.user, self.admin, self.teacher_user()):
+            self.client.force_login(user)
+
+            for key, label in TABS:
+                response = self.client.get(self.url, {"tab": key})
+
+                self.assertEqual(response.status_code, 200, (user, key))
+                self.assertContains(response, "СПРАВОЧНИК")
+                self.assertContains(response, label)
+
+    def teacher_user(self):
+        return Profile.objects.get(teacher=self.teacher).user
+
+    def test_default_and_unknown_tab_show_groups(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["tab"], "groups")
+
+        response = self.client.get(self.url, {"tab": "что-то"})
+        self.assertEqual(response.context["tab"], "groups")
+
+        response = self.client.get(self.url, {"tab": "<script>"})
+        self.assertEqual(response.context["tab"], "groups")
+        self.assertNotContains(response, "<script>alert")
+
+    def test_menu_link_and_zone(self):
+        response = self.client.get(self.url)
+
+        self.assertContains(response, f'href="{self.url}"')
+        self.assertContains(response, "Справочник")
+        self.assertEqual(response.context["nav_zone"], "common")
+        self.assertEqual(response.context["nav_current"], "reference")
+
+    # --- без личных данных ---
+
+    def test_no_personal_data_in_any_tab(self):
+        from .reference import TABS
+
+        self.student()
+        Duty.objects.create(shift=self.shift, weekday=1, teacher=self.teacher)
+        self.client.force_login(self.admin)
+
+        for key, _label in TABS:
+            html = self.client.get(self.url, {"tab": key}).content.decode()
+
+            self.assertNotIn("teacherivanov@gmail.com", html, key)
+            self.assertNotIn("stud1", html, key)
+
+    # --- группы ---
+
+    def test_groups_tab(self):
+        self.student("stud1")
+        self.student("stud2")
+        self.group.room = "204"
+        self.group.group_curator = self.teacher
+        self.group.save()
+
+        _response, rows = self.rows("groups")
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(
+            self.texts(row),
+            ["А-01", "1", "1", "Иванов И. И.", "", "204", "2", "1"],
+        )
+        self.assertEqual(
+            row["cells"][0]["url"],
+            reverse("group_card", kwargs={"group_id": self.group.pk}),
+        )
+        self.assertEqual(
+            row["cells"][3]["url"],
+            reverse("teacher_card", kwargs={"teacher_id": self.teacher.pk}),
+        )
+
+    def test_groups_are_sorted_by_name(self):
+        Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        Group.objects.create(
+            group_name="А-00", group_course=self.course, shift=self.shift
+        )
+
+        _response, rows = self.rows("groups")
+
+        self.assertEqual(
+            [self.texts(row)[0] for row in rows], ["А-00", "А-01", "Б-02"]
+        )
+
+    def test_numbers_carry_numeric_sort_values(self):
+        for _ in range(11):
+            self.student("s%d" % _)
+
+        _response, rows = self.rows("groups")
+        cell = rows[0]["cells"][6]
+
+        self.assertEqual(cell["text"], "11")
+        self.assertEqual(cell["sort"], 11)
+
+    def test_group_tag_is_shown(self):
+        tag = GroupTag.objects.create(tag_name="ИС", tag_color="#336699")
+        self.group.group_tag = tag
+        self.group.save()
+
+        _response, rows = self.rows("groups")
+
+        self.assertEqual(self.texts(rows[0])[4], "ИС")
+
+    # --- преподаватели ---
+
+    def test_teachers_tab(self):
+        self.group.group_curator = self.teacher
+        self.group.save()
+        Duty.objects.create(shift=self.shift, weekday=1, teacher=self.teacher)
+        Duty.objects.create(shift=self.shift, weekday=3, teacher=self.teacher)
+        other = make_teacher("Петров П. П.", "teacherpetrov@gmail.com")
+
+        _response, rows = self.rows("teachers")
+
+        self.assertEqual(
+            [self.texts(row)[0] for row in rows],
+            ["Иванов И. И.", "Петров П. П."],
+        )
+        self.assertEqual(
+            self.texts(rows[0]), ["Иванов И. И.", "", "А-01", "1", "Пн, Ср"]
+        )
+        self.assertEqual(self.texts(rows[1])[3], "0")
+        self.assertEqual(other.teacher_name, "Петров П. П.")
+
+    # --- предметы ---
+
+    def test_subjects_tab(self):
+        Pair.objects.filter(pk=self.pair.pk).update(
+            description="Алгебра и начала анализа " * 10
+        )
+        second = Group.objects.create(
+            group_name="Б-02", group_course=self.course, shift=self.shift
+        )
+        PairGroup.objects.create(pair=self.pair, group=second)
+
+        _response, rows = self.rows("subjects")
+
+        self.assertEqual(len(rows), 1)
+        values = self.texts(rows[0])
+        self.assertEqual(values[0], "Математика")
+        self.assertEqual(values[1], "Иванов И. И.")
+        self.assertEqual(values[2], "А-01, Б-02")
+        self.assertTrue(values[3].endswith("…"))
+        self.assertLessEqual(len(values[3]), 81)
+        # Полный текст — в подсказке
+        self.assertGreater(len(rows[0]["cells"][3]["title"]), 80)
+
+    # --- кабинеты ---
+
+    def test_rooms_tab_merges_spellings_and_counts_special(self):
+        self.group.room = "204"
+        self.group.save()
+        Day.objects.filter(group=self.group).update(room=" 204 ")
+        Day.objects.create(
+            group=self.group, pair=self.pair, pair_number=2,
+            weekday=Weekday.objects.get(pk=1), room="Спортзал",
+        )
+
+        _response, rows = self.rows("rooms")
+
+        by_room = {self.texts(row)[0]: self.texts(row) for row in rows}
+
+        self.assertEqual(set(by_room), {"204", "Спортзал"})
+        self.assertEqual(by_room["204"][1], "А-01")
+        self.assertEqual(by_room["204"][3], "1")
+        self.assertEqual(by_room["Спортзал"][1], "")
+        self.assertEqual(by_room["Спортзал"][2], "А-01")
+        self.assertEqual(by_room["Спортзал"][4], "1")
+
+    def test_rooms_are_in_natural_order(self):
+        for number, name in enumerate(("10", "9", "2а", "Актовый"), start=2):
+            Group.objects.create(
+                group_name=f"Г-{number}", group_course=self.course,
+                shift=self.shift, room=name,
+            )
+
+        _response, rows = self.rows("rooms")
+
+        self.assertEqual(
+            [self.texts(row)[0] for row in rows],
+            ["2а", "9", "10", "Актовый"],
+        )
+
+    def test_rooms_tab_is_empty_without_rooms(self):
+        response, rows = self.rows("rooms")
+
+        self.assertEqual(rows, [])
+        self.assertContains(response, "пока пусто")
+
+    # --- дежурные ---
+
+    def test_duty_tab(self):
+        Duty.objects.create(shift=self.shift, weekday=3, teacher=self.teacher)
+        Duty.objects.create(shift=self.shift, weekday=1, teacher=self.teacher)
+
+        _response, rows = self.rows("duty")
+
+        self.assertEqual(
+            [self.texts(row)[:2] for row in rows],
+            [["Понедельник", "1"], ["Среда", "1"]],
+        )
+        self.assertEqual(rows[0]["cells"][0]["sort"], 1)
+        self.assertEqual(rows[0]["cells"][2]["text"], "Иванов И. И.")
+
+    # --- ссылки «Изменить» только у администратора ---
+
+    def test_edit_links_only_for_admin(self):
+        Duty.objects.create(shift=self.shift, weekday=1, teacher=self.teacher)
+
+        for tab, key in (
+            ("groups", "group"), ("subjects", "pair"), ("duty", "duty"),
+        ):
+            response, rows = self.rows(tab, user=self.admin)
+
+            self.assertTrue(response.context["can_edit"], tab)
+            self.assertContains(response, "Изменить")
+            self.assertIn(f"edit={key}", rows[0]["edit_url"])
+            self.assertIn("item=", rows[0]["edit_url"])
+
+            response, rows = self.rows(tab, user=self.user)
+
+            self.assertFalse(response.context["can_edit"], tab)
+            self.assertNotContains(response, "Изменить")
+            self.assertEqual(rows[0]["edit_url"], "")
+
+    def test_edit_link_opens_the_workshop_card(self):
+        _response, rows = self.rows("groups", user=self.admin)
+
+        response = self.client.get(rows[0]["edit_url"])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "А-01")
+
+    def test_teachers_and_rooms_have_no_edit_column(self):
+        self.group.room = "204"
+        self.group.save()
+
+        for tab in ("teachers", "rooms"):
+            response, _rows = self.rows(tab, user=self.admin)
+
+            self.assertFalse(response.context["can_edit"], tab)
+
+    # --- разметка и скрипт ---
+
+    def test_page_is_wired_for_search_and_sorting(self):
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "data-filter")
+        self.assertContains(response, "data-filter-input")
+        self.assertContains(response, "data-sortable")
+        self.assertContains(response, 'data-sort="number"')
+        self.assertContains(response, 'data-sort-value="')
+        # Поиск идёт по тексту ячеек, а не по кнопке «Изменить»
+        self.client.force_login(self.admin)
+        response = self.client.get(self.url)
+        values = re.findall(
+            r'data-filter-text="([^"]*)"', response.content.decode()
+        )
+
+        self.assertEqual(values, ["А-01 1 1 0 1"])
+
+    def test_script_has_sorting(self):
+        path = Path(settings.BASE_DIR) / "schedule" / "static" / "filter.js"
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn("table[data-sortable]", text)
+        self.assertIn("data-sort-value", text)
+        self.assertIn("data-filter-count", text)
+
+    def test_html_is_escaped(self):
+        Group.objects.create(
+            group_name="<b>x</b>", group_course=self.course,
+            shift=self.shift,
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertNotContains(response, "<b>x</b>")
+        self.assertContains(response, "&lt;b&gt;x&lt;/b&gt;")
+
+    def test_query_count_does_not_grow_with_rows(self):
+        def count():
+            with CaptureQueriesContext(connection) as queries:
+                for tab in ("groups", "teachers", "subjects", "rooms"):
+                    self.client.get(self.url, {"tab": tab})
+
+            return len(queries)
+
+        before = count()
+
+        for number in range(10):
+            group = Group.objects.create(
+                group_name=f"Н-{number}", group_course=self.course,
+                shift=self.shift, room=str(300 + number),
+                group_curator=self.teacher,
+            )
+            PairGroup.objects.create(pair=self.pair, group=group)
+            Day.objects.create(
+                group=group, pair=self.pair, pair_number=1,
+                weekday=Weekday.objects.get(pk=2), room="Лаб",
+            )
+
+        self.assertLessEqual(count(), before + 2)
+
+
+class CsvFormulaTests(BaseTestCase):
+    """Значения, похожие на формулы, не должны выполняться в Excel."""
+
+    def test_csv_safe(self):
+        from .csv_io import csv_safe
+
+        for text in ("=1+1", "+7", "-x", "@a", "\tx", "\rx"):
+            self.assertEqual(csv_safe(text), "'" + text)
+
+        for text in ("Математика", "", "a=b", "it's", "'уже", "1-2"):
+            self.assertEqual(csv_safe(text), text)
+
+        self.assertEqual(csv_safe(3), 3)
+        self.assertIsNone(csv_safe(None))
+
+    def test_csv_unsafe_reverses_only_what_the_export_added(self):
+        from .csv_io import csv_safe, csv_unsafe
+
+        for text in ("=1+1", "+7", "-x", "@a"):
+            self.assertEqual(csv_unsafe(csv_safe(text)), text)
+
+        for text in ("'abc", "it's", "'", "Математика", "'1"):
+            self.assertEqual(csv_unsafe(text), text)
+
+    def test_export_escapes_formulas(self):
+        from .csv_io import build_csv
+
+        Teacher.objects.create(teacher_name='=HYPERLINK("http://x","y")')
+        Teacher.objects.create(teacher_name="@SUM(1)")
+
+        text = build_csv("teachers").decode("utf-8-sig")
+        first_cells = [
+            line.split(";")[0].lstrip('"') for line in text.splitlines()[1:]
+        ]
+
+        self.assertFalse(
+            [cell for cell in first_cells if cell[:1] in "=+-@"], first_cells
+        )
+        self.assertIn("'=HYPERLINK", text)
+        self.assertIn("'@SUM(1)", text)
+
+    def test_export_then_import_keeps_the_name(self):
+        from .csv_io import _read_rows, build_csv
+
+        Teacher.objects.create(teacher_name="=Иванов")
+
+        text = build_csv("teachers").decode("utf-8-sig")
+        rows = _read_rows(text, ["ФИО", "Тег"])
+        names = [data["ФИО"] for _line, data in rows]
+
+        self.assertIn("=Иванов", names)
+
+    def test_diary_export_goes_through_the_same_guard(self):
+        from .csv_io import build_csv
+
+        pair = make_pair(self.group, self.teacher, "-Алгебра")
+
+        from diary.models import Mark
+
+        student = get_user_model().objects.create_user(
+            "stud@gmail.com", password=PASSWORD
+        )
+        Mark.objects.create(
+            student=student, pair=pair, lesson_date=MONDAY, pair_number=1,
+            kind="score", score=80, teacher=self.teacher,
+        )
+
+        text = build_csv("diary").decode("utf-8-sig")
+
+        self.assertIn("'-Алгебра", text)
+
+
+class EnvSettingsTests(TestCase):
+    def test_env_bool(self):
+        from config.env import env_bool
+
+        self.assertTrue(env_bool({}, "X", True))
+        self.assertFalse(env_bool({}, "X", False))
+
+        for word in ("1", "true", "YES", " on "):
+            self.assertTrue(env_bool({"X": word}, "X", False), word)
+
+        for word in ("0", "false", "No", "off", ""):
+            self.assertFalse(env_bool({"X": word}, "X", True), word)
+
+    def test_env_bool_rejects_a_typo(self):
+        from config.env import env_bool
+
+        with self.assertRaises(ValueError):
+            env_bool({"X": "flase"}, "X", True)
+
+    def test_env_list(self):
+        from config.env import env_list
+
+        self.assertEqual(env_list({}, "H"), [])
+        self.assertEqual(
+            env_list({"H": "a.kz, b.kz,, c.kz "}, "H"), ["a.kz", "b.kz", "c.kz"]
+        )
+
+    def load_settings(self, **env):
+        """Настройки в чистом процессе (без «test» в argv): (код, вывод)."""
+        import os
+        import subprocess
+        import sys
+
+        clean = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(("DJANGO_", "DB_"))
+        }
+        clean.update(env)
+        code = (
+            "import sys; sys.path.insert(0, %r);"
+            "import config.settings as s;"
+            "print(s.DEBUG, s.SESSION_COOKIE_SECURE, s.CSRF_COOKIE_SECURE,"
+            " s.ALLOWED_HOSTS, s.DATABASES['default']['NAME'],"
+            " s.SECRET_KEY[:6])" % str(settings.BASE_DIR)
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code], env=clean, capture_output=True,
+            text=True, cwd=str(settings.BASE_DIR),
+        )
+
+        return result.returncode, result.stdout.strip(), result.stderr
+
+    def test_defaults_are_the_development_mode(self):
+        code, out, _err = self.load_settings()
+
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("True False False []"))
+        self.assertIn("schedule_db", out)
+
+    def test_production_needs_its_own_secret_key(self):
+        code, _out, err = self.load_settings(DJANGO_DEBUG="0")
+
+        self.assertNotEqual(code, 0)
+        self.assertIn("DJANGO_SECRET_KEY", err)
+
+    def test_production_needs_allowed_hosts(self):
+        code, _out, err = self.load_settings(
+            DJANGO_DEBUG="0", DJANGO_SECRET_KEY="x" * 50
+        )
+
+        self.assertNotEqual(code, 0)
+        self.assertIn("DJANGO_ALLOWED_HOSTS", err)
+
+    def test_production_is_secure_by_default(self):
+        code, out, _err = self.load_settings(
+            DJANGO_DEBUG="0", DJANGO_SECRET_KEY="secret-" + "x" * 40,
+            DJANGO_ALLOWED_HOSTS="site.kz,www.site.kz", DB_NAME="prod_db",
+        )
+
+        self.assertEqual(code, 0, _err)
+        self.assertEqual(
+            out, "False True True ['site.kz', 'www.site.kz'] prod_db secret"
+        )
+
+    def test_https_can_be_switched_off_explicitly(self):
+        code, out, _err = self.load_settings(
+            DJANGO_DEBUG="0", DJANGO_SECRET_KEY="secret-" + "x" * 40,
+            DJANGO_ALLOWED_HOSTS="site.kz", DJANGO_HTTPS="0",
+        )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("False False False"))
+
+    def test_typo_in_debug_is_an_error(self):
+        code, _out, err = self.load_settings(DJANGO_DEBUG="flase")
+
+        self.assertNotEqual(code, 0)
+        self.assertIn("DJANGO_DEBUG", err)
+
+    def test_readme_documents_the_variables(self):
+        text = (Path(settings.BASE_DIR) / "README.md").read_text(
+            encoding="utf-8"
+        )
+
+        for word in (
+            "DJANGO_DEBUG", "DJANGO_SECRET_KEY", "DJANGO_ALLOWED_HOSTS",
+            "DB_PASSWORD", "EMAIL_HOST_PASSWORD", "manage.py test",
+            "create_db.py", "pg_dump",
+        ):
+            self.assertIn(word, text)
+
+
+class LoginHardeningTests(TestCase):
+    """Подбор пароля с разных адресов и перебор почт с одного адреса."""
+
+    EMAIL = "ivanpetrov77@gmail.com"
+
+    def setUp(self):
+        cache.clear()
+        get_user_model().objects.create_user(self.EMAIL, password=PASSWORD)
+
+    def tearDown(self):
+        cache.clear()
+
+    def login(self, email, password, ip):
+        return self.client.post(
+            reverse("login"), {"username": email, "password": password},
+            REMOTE_ADDR=ip,
+        )
+
+    def test_limits_for_email_and_address_are_higher_than_for_the_pair(self):
+        from .forms import (
+            MAX_FAILED_LOGINS, MAX_FAILED_PER_EMAIL, MAX_FAILED_PER_IP,
+        )
+
+        self.assertGreater(MAX_FAILED_PER_EMAIL, MAX_FAILED_LOGINS)
+        self.assertGreater(MAX_FAILED_PER_IP, MAX_FAILED_PER_EMAIL)
+
+    def test_one_email_from_many_addresses_gets_locked(self):
+        with mock.patch("schedule.forms.MAX_FAILED_PER_EMAIL", 3):
+            for number in range(3):
+                self.login(self.EMAIL, "wrong-password", f"10.0.0.{number}")
+
+            # Четвёртый адрес с верным паролем: вход закрыт
+            response = self.login(self.EMAIL, PASSWORD, "10.0.0.99")
+
+        self.assertContains(response, "Слишком много неудачных попыток")
+        self.assertNotIn("_auth_user_id", self.client.session)
+
+    def test_one_address_with_many_emails_gets_locked(self):
+        with mock.patch("schedule.forms.MAX_FAILED_PER_IP", 3):
+            for number in range(3):
+                self.login(f"nobody{number}@gmail.com", "x", "10.0.0.5")
+
+            response = self.login(self.EMAIL, PASSWORD, "10.0.0.5")
+
+            self.assertContains(response, "Слишком много неудачных попыток")
+
+            # С другого адреса тот же человек входит спокойно
+            response = self.login(self.EMAIL, PASSWORD, "10.0.0.6")
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_successful_login_clears_the_email_counter(self):
+        with mock.patch("schedule.forms.MAX_FAILED_PER_EMAIL", 3):
+            self.login(self.EMAIL, "wrong-password", "10.0.1.1")
+            self.login(self.EMAIL, "wrong-password", "10.0.1.2")
+            self.assertEqual(
+                self.login(self.EMAIL, PASSWORD, "10.0.1.3").status_code, 302
+            )
+            self.client.logout()
+
+            self.login(self.EMAIL, "wrong-password", "10.0.1.4")
+            self.login(self.EMAIL, "wrong-password", "10.0.1.5")
+            response = self.login(self.EMAIL, PASSWORD, "10.0.1.6")
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_pair_limit_still_works(self):
+        from .forms import MAX_FAILED_LOGINS
+
+        for _ in range(MAX_FAILED_LOGINS):
+            self.login(self.EMAIL, "wrong-password", "10.0.2.1")
+
+        response = self.login(self.EMAIL, PASSWORD, "10.0.2.1")
+
+        self.assertContains(response, "Слишком много неудачных попыток")
+
+
+class SubmitGuardTests(BaseTestCase):
+    def test_script_is_loaded_on_every_page_with_the_menu(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("groups"))
+
+        self.assertContains(response, "submit.js")
+
+    def test_script_guards_post_forms(self):
+        path = Path(settings.BASE_DIR) / "schedule" / "static" / "submit.js"
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn("data-submitting", text)
+        self.assertIn("data-allow-resubmit", text)
+        self.assertIn("pageshow", text)
+        # Разблокировка через несколько секунд: скачивание не должно
+        # оставить кнопки отключёнными навсегда
+        self.assertIn("LOCK_MS", text)

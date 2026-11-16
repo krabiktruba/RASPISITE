@@ -7,7 +7,7 @@
     <header class="daily-header page-head">
         <div class="page-head-title">
             <p class="page-head-caption">{% if is_today_selected %}Сегодня — {% endif %}{{ selected_label }}</p>
-            <h1>ГРУППЫ</h1>
+            <h1>{% if is_today_selected %}ГРУППЫ НА СЕГОДНЯ{% else %}ГРУППЫ НА ДЕНЬ{% endif %}</h1>
         </div>
 
         <div class="page-head-actions">
@@ -46,6 +46,13 @@
             </a>
         {% endfor %}
     </nav>
+
+    {% if duty %}
+        <p class="duty-line">
+            <strong>Дежурные:</strong>
+            {% for entry in duty %}{{ entry.shift_id }} смена — {% for teacher in entry.teachers %}{{ teacher.teacher_name|person }}{% if not forloop.last %}, {% endif %}{% endfor %}{% if not forloop.last %}; {% endif %}{% endfor %}
+        </p>
+    {% endif %}
 
     {% if q %}
         <p class="group-search-info">
@@ -98,6 +105,44 @@
                     <div class="pairs">
                         {% for pair in item.pairs %}
                             {% with lesson=pair.lesson %}
+                            {% if pair.halves %}
+                            <div class="pair pair-split">
+                                <div class="pair-number">{{ pair.number }}</div>
+
+                                <div class="pair-time">
+                                    {% if pair.time %}
+                                        {{ pair.time.pair_start_time|time:"H:i" }}–{{ pair.time.pair_end_time|time:"H:i" }}
+                                    {% else %}
+                                        &nbsp;
+                                    {% endif %}
+                                </div>
+
+                                <div class="pair-halves">
+                                    {% for half in pair.halves %}
+                                        <div class="pair-half{% if half.current %} is-current-week{% endif %}{% if half.current and half.lesson.status %} is-{{ half.lesson.status }}{% endif %}">
+                                            <span class="week-tag{% if half.current %} is-current{% endif %}"{% if half.current %} title="Идёт на этой неделе"{% endif %}>{{ half.label }}</span>
+                                            <div class="pair-name{% if half.lesson.description %} has-description{% endif %}"{% if half.lesson.description %} title="{{ half.lesson.description }}"{% endif %}>
+                                                {% if half.lesson %}
+                                                    {{ half.lesson.subject }}
+                                                    {% if half.lesson.status_label %}
+                                                        <span class="status-badge status-{{ half.lesson.status }}">{{ half.lesson.status_label }}</span>
+                                                    {% endif %}
+                                                {% else %}
+                                                    <span class="pair-window">окно</span>
+                                                {% endif %}
+                                            </div>
+                                            {% if half.lesson %}
+                                                <div class="pair-teacher">
+                                                    {{ half.lesson.teacher|person }}
+                                                    {% if half.lesson.room %}<span class="pair-room">{{ half.lesson.room|room_label }}</span>{% endif %}
+                                                    {% if half.lesson.note %}<span class="pair-note">{{ half.lesson.note }}</span>{% endif %}
+                                                </div>
+                                            {% endif %}
+                                        </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% else %}
                             <div class="pair{% if lesson.status %} is-{{ lesson.status }}{% endif %}">
                                 <div class="pair-number">
                                     {{ pair.number }}
@@ -111,7 +156,7 @@
                                     {% endif %}
                                 </div>
 
-                                <div class="pair-name">
+                                <div class="pair-name{% if lesson.description %} has-description{% endif %}"{% if lesson.description %} title="{{ lesson.description }}"{% endif %}>
                                     {% if lesson %}
                                         {{ lesson.subject }}
                                         {% if lesson.status_label %}
@@ -125,6 +170,7 @@
                                 <div class="pair-teacher">
                                     {% if lesson %}
                                         {{ lesson.teacher|person }}
+                                        {% if lesson.room %}<span class="pair-room">{{ lesson.room|room_label }}</span>{% endif %}
                                         {% if lesson.note %}
                                             <span class="pair-note">{{ lesson.note }}</span>
                                         {% endif %}
@@ -133,6 +179,7 @@
                                     {% endif %}
                                 </div>
                             </div>
+                            {% endif %}
                             {% endwith %}
                         {% endfor %}
                     </div>

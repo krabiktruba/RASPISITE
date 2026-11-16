@@ -645,9 +645,13 @@ class GroupDiaryPageTests(GroupBase):
             r'title="Профиль группы">%s</a></h1>'
             % (re.escape(card), re.escape(self.group.group_name)),
         )
-        # кнопки «Профиль группы» больше нет, остаётся «Расписание группы»
+        # кнопки «Профиль группы» больше нет; к расписанию ведёт переключатель
         self.assertNotContains(response, f'href="{card}">Профиль группы</a>')
-        self.assertContains(response, f'href="{schedule}">Расписание группы</a>')
+        self.assertContains(
+            response,
+            f'<a class="mode-switch-item" href="{schedule}">Расписание</a>',
+        )
+        self.assertNotContains(response, "Расписание группы</a>")
 
     def test_header_shows_course_and_shift_pills(self):
         response = self.open_group(self.admin)
@@ -657,7 +661,7 @@ class GroupDiaryPageTests(GroupBase):
     def test_schedule_button_keeps_the_viewed_week(self):
         response = self.open_group(self.admin, "?date=2026-10-27")
 
-        self.assertContains(response, "?date=2026-10-26\">Расписание группы")
+        self.assertContains(response, "?date=2026-10-26\">Расписание</a>")
 
     def test_students_are_alphabetical_and_only_of_this_group(self):
         response = self.open_group(self.admin)
@@ -1092,6 +1096,167 @@ class GroupSaveTests(GroupBase):
         self.assertEqual(Mark.objects.count(), 0)
 
 
+class GroupConcurrentSaveTests(GroupBase):
+    """Устаревшая страница не затирает оценки, поставленные за это время."""
+
+    def put(self, student, score=70):
+        return Mark.objects.create(
+            student=student, pair=self.pair, lesson_date=LESSON,
+            pair_number=1, kind=MARK_SCORE, score=score,
+            teacher=self.teacher,
+        )
+
+    def post(self, cells, user=None, today=AFTER):
+        """cells: {студент: (введённый текст, что было при открытии)}."""
+        self.client.force_login(user or self.teacher_user)
+        data = {}
+
+        for student, (text, original) in cells.items():
+            field = self.field(student)
+            data[field] = text
+
+            if original is not None:
+                data["o_" + field] = original
+
+        with today_is(today):
+            return self.client.post(self.url_group(query=WEEK), data)
+
+    def cell(self, response, student):
+        for row in response.context["rows"]:
+            if row["user"].pk == student.pk:
+                return row["values"][0]
+
+        self.fail("нет строки студента")
+
+    def test_page_sends_the_original_values(self):
+        self.put(self.anna, 70)
+
+        response = self.open_group(self.teacher_user, today=AFTER)
+        anna = self.cell(response, self.anna)
+
+        self.assertEqual(anna["original"], "70")
+        self.assertContains(
+            response,
+            f'name="o_{self.field(self.anna)}"',
+        )
+        self.assertContains(response, 'value="70"')
+
+    def test_untouched_cell_does_not_wipe_a_newer_mark(self):
+        # Страницу открыли, когда у Анны оценки не было; потом её поставили
+        self.put(self.anna, 70)
+
+        response = self.post({
+            self.anna: ("", ""),
+            self.boris: ("80", ""),
+        })
+
+        self.assertEqual(response.status_code, 302)
+        marks = self.marks()
+        self.assertEqual(marks[self.anna.pk].score, 70)
+        self.assertEqual(marks[self.boris.pk].score, 80)
+
+    def test_nothing_changed_means_nothing_saved(self):
+        self.put(self.anna, 70)
+
+        response = self.post({
+            self.anna: ("70", "70"), self.boris: ("", ""),
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Mark.objects.count(), 1)
+        self.assertIn(
+            "Изменений нет",
+            [str(m) for m in get_messages(response.wsgi_request)][0],
+        )
+
+    def test_conflicting_edit_is_refused_and_nothing_is_saved(self):
+        self.put(self.anna, 70)
+
+        response = self.post({
+            self.anna: ("90", ""),
+            self.boris: ("80", ""),
+        })
+
+        self.assertEqual(response.status_code, 200)
+        anna = self.cell(response, self.anna)
+
+        self.assertIn("оценку изменили", anna["error"])
+        self.assertIn("70", anna["error"])
+        # Введённое остаётся, а исходное обновлено до текущего
+        self.assertEqual(anna["text"], "90")
+        self.assertEqual(anna["original"], "70")
+        self.assertEqual(self.marks()[self.anna.pk].score, 70)
+        self.assertNotIn(self.boris.pk, self.marks())
+
+    def test_retry_after_conflict_saves(self):
+        self.put(self.anna, 70)
+        self.post({self.anna: ("90", "")})
+
+        response = self.post({self.anna: ("90", "70")})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.marks()[self.anna.pk].score, 90)
+
+    def test_same_value_as_the_newer_mark_is_not_a_conflict(self):
+        self.put(self.anna, 70)
+
+        response = self.post({self.anna: ("70", "")})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.marks()[self.anna.pk].score, 70)
+
+    def test_edit_and_clear_with_a_fresh_original(self):
+        self.put(self.anna, 70)
+        self.put(self.boris, 60)
+
+        response = self.post({
+            self.anna: ("95", "70"), self.boris: ("", "60"),
+        })
+
+        self.assertEqual(response.status_code, 302)
+        marks = self.marks()
+        self.assertEqual(marks[self.anna.pk].score, 95)
+        self.assertNotIn(self.boris.pk, marks)
+
+    def test_original_is_compared_without_spaces(self):
+        self.put(self.anna, 70)
+
+        response = self.post({self.anna: (" 70 ", "70")})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.marks()[self.anna.pk].score, 70)
+
+    def test_form_without_originals_still_works(self):
+        response = self.post({self.anna: ("55", None)})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.marks()[self.anna.pk].score, 55)
+
+    def test_invalid_value_is_still_reported(self):
+        response = self.post({self.anna: ("сто", "")})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.cell(response, self.anna)["error"])
+        self.assertEqual(Mark.objects.count(), 0)
+
+    def test_simultaneous_insert_gives_a_message_not_a_500(self):
+        with mock.patch(
+            "diary.views._save_marks", side_effect=IntegrityError("dup")
+        ):
+            response = self.post({self.anna: ("70", "")})
+
+        self.assertEqual(response.status_code, 302)
+        messages = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("одновременно" in m for m in messages))
+
+    def test_real_duplicate_is_caught(self):
+        """Вторая запись той же ячейки (гонка) ловится ограничением базы."""
+        self.put(self.anna, 70)
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.put(self.anna, 71)
+
+
 class DiaryHomeTests(LessonBase):
     def home(self, user, today=LESSON, query=""):
         self.client.force_login(user)
@@ -1320,7 +1485,7 @@ class StudentDiaryTests(StudentDiaryBase):
             with CaptureQueriesContext(connection) as small:
                 self.client.get(url)
 
-            for number in range(2, 6):
+            for number in range(2, 5):
                 Day.objects.create(
                     group=self.group, pair=self.pair, pair_number=number,
                     weekday=Weekday.objects.get(pk=1),
@@ -1433,10 +1598,13 @@ class WeekMarksHelperTests(LessonBase):
 class ScheduleLessonPairIdTests(LessonBase):
     def slots(self, day):
         from schedule.changes import group_days_by_number, load_changes
+        from schedule.weeks import week_kind
 
         return resolve_group_day(
             self.group.pk, day,
-            group_days_by_number(self.group.pk, day.isoweekday()),
+            group_days_by_number(
+                self.group.pk, day.isoweekday(), week_kind(day)
+            ),
             load_changes(day, day),
         )
 

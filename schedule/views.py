@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db import DatabaseError, transaction
 from django.db.models import Prefetch, ProtectedError, Q
@@ -26,20 +26,42 @@ from .access import (
     set_group,
     set_role,
     set_teacher_tag,
+    update_account,
     user_role,
+)
+from .limits import (
+    ROOM_MAX,
+    BREAK_COUNT,
+    FIRST_PAIR,
+    LAST_PAIR,
+    PAIR_NUMBERS,
+    pair_range_text,
 )
 from .changes import (
     CANCEL,
     MOVE,
     REPLACE,
+    current_slots,
     find_change,
     group_days_by_number,
     index_changes,
     load_changes,
     resolve_group_day,
+    slot_halves,
     slot_is_free,
+    split_slots,
     teacher_conflict,
     teacher_lessons,
+)
+from .weeks import (
+    WEEK_EVERY,
+    WEEK_LABELS,
+    WEEK_LOWER,
+    WEEK_SHORT,
+    WEEK_UPPER,
+    compatible as weeks_compatible,
+    load_semesters,
+    week_kind,
 )
 from .csv_io import (
     KINDS,
@@ -72,15 +94,21 @@ from .dates import (
     week_days,
 )
 
+from .modes import MODE_SCHEDULE, remember_mode, switch_on_schedule
 from .tags import build_tag_css
+from .duty import duty_for_weekday, duty_table, duty_text
 from .forms import (
     GroupForm,
     GroupTagForm,
     PairForm,
+    DutyForm,
     NewUserForm,
     SemesterForm,
     TeacherTagForm,
+    UserEditForm,
 )
+from .mail import send_email_change_notice
+from .rooms import clean_room, conflict_text, group_room_conflict, room_key
 from .models import (
     ROLE_ADMIN,
     ROLE_CHOICES,
@@ -482,9 +510,19 @@ def calendar_view(request):
 
     target_url, target_params = _calendar_target(request.user)
 
+    duty_by_weekday = {
+        number: duty_for_weekday(number) for number in range(1, 7)
+    }
+    duty_shifts, duty_rows = duty_table()
+
     calendar_weeks = [
         [
             {
+                "duty_title": (
+                    ""
+                    if current in holidays or current.isoweekday() == 7
+                    else duty_text(duty_by_weekday[current.isoweekday()])
+                ),
                 "number": current.day,
                 "iso": current.isoformat(),
                 "url": (
@@ -530,6 +568,8 @@ def calendar_view(request):
         ],
         "calendar_weeks": calendar_weeks,
         "month_holidays": month_holidays,
+        "duty_shifts": duty_shifts,
+        "duty_rows": duty_rows,
         "prev": (
             {"year": prev_year, "month": prev_month}
             if prev_year >= MIN_YEAR else None
@@ -634,7 +674,7 @@ def _open_change_form(params, schedule_days):
     slot_day = parse_date(params.get("slot"), None)
     number = _int_param(params.get("number"))
 
-    if slot_day is None or number not in range(1, 7):
+    if slot_day is None or number not in PAIR_NUMBERS:
         return None
 
     item = next(
@@ -680,7 +720,7 @@ def _open_change_form(params, schedule_days):
         "teacher": lesson["teacher"],
         "values": values,
         "teachers": real_teachers().order_by("teacher_name", "teacher_id"),
-        "pair_numbers": range(1, 7),
+        "pair_numbers": PAIR_NUMBERS,
     }
 
 
@@ -722,15 +762,14 @@ def group_schedule(request, group_id):
         for hour in StudyHours.objects.filter(shift=group.shift)
     }
 
-    days_by_slot = {
-        (day.weekday_id, day.pair_number): day
-        for day in Day.objects.filter(
-            group=group
-        ).select_related(
+    day_records = list(
+        Day.objects.filter(group=group).select_related(
+            "group",
             "pair",
             "pair__teacher",
         )
-    }
+    )
+    semesters = load_semesters()
 
     changes = load_changes(week[0]["date"], week[-1]["date"])
 
@@ -741,22 +780,26 @@ def group_schedule(request, group_id):
         pairs = []
 
         if not off_reason:
+            kind = week_kind(item["date"], semesters)
             slots = resolve_group_day(
                 group.pk,
                 item["date"],
-                {
-                    number: day
-                    for (weekday_id, number), day in days_by_slot.items()
-                    if weekday_id == item["id"]
-                },
+                current_slots(day_records, item["id"], kind),
                 changes,
             )
+            halves = split_slots(day_records, item["id"])
 
-            for pair_number in range(1, 7):
+            for pair_number in PAIR_NUMBERS:
                 pairs.append({
                     "number": pair_number,
                     "time": hours_by_pair.get(pair_number),
                     "lesson": slots[pair_number],
+                    "halves": (
+                        slot_halves(
+                            halves[pair_number], kind, slots[pair_number]
+                        )
+                        if pair_number in halves else None
+                    ),
                 })
 
         schedule_days.append({
@@ -790,13 +833,23 @@ def group_schedule(request, group_id):
         "next_week_iso": (
             selected_date + timedelta(days=7)
         ).isoformat(),
+        "mode_switch": switch_on_schedule(
+            request.user, group, selected_date.isoformat()
+        ),
     }
 
-    return render(
+    response = render(
         request,
         "days.html",
         context
     )
+
+    # Студент, открывший расписание своей группы, в следующий раз попадёт
+    # по «Моё расписание» сюда же
+    if own_group_id(request.user) == group.pk:
+        remember_mode(request, response, MODE_SCHEDULE)
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -854,40 +907,49 @@ def daily_schedule(request):
             )
         }
 
-        days_by_slot = {
-            (day.group_id, day.pair_number): day
-            for day in Day.objects.filter(
+        day_records = list(
+            Day.objects.filter(
                 weekday_id=selected_date.isoweekday(),
                 group__in=groups,
             ).select_related(
+                "group",
                 "pair",
                 "pair__teacher",
             )
-        }
+        )
+        kind = week_kind(selected_date)
 
         changes = load_changes(selected_date, selected_date)
 
         for group in groups:
             pairs = []
+            group_records = [
+                record for record in day_records
+                if record.group_id == group.pk
+            ]
+            weekday_id = selected_date.isoweekday()
 
             slots = resolve_group_day(
                 group.pk,
                 selected_date,
-                {
-                    number: day
-                    for (group_id, number), day in days_by_slot.items()
-                    if group_id == group.pk
-                },
+                current_slots(group_records, weekday_id, kind),
                 changes,
             )
+            halves = split_slots(group_records, weekday_id)
 
-            for pair_number in range(1, 7):
+            for pair_number in PAIR_NUMBERS:
                 pairs.append({
                     "number": pair_number,
                     "time": hours_by_slot.get(
                         (group.shift_id, pair_number)
                     ),
                     "lesson": slots[pair_number],
+                    "halves": (
+                        slot_halves(
+                            halves[pair_number], kind, slots[pair_number]
+                        )
+                        if pair_number in halves else None
+                    ),
                 })
 
             schedule_groups.append({
@@ -907,6 +969,7 @@ def daily_schedule(request):
             selected_date + timedelta(days=7)
         ).isoformat(),
         "day_off": day_off,
+        "duty": [] if day_off else duty_for_weekday(selected_date.isoweekday()),
         "schedule_groups": schedule_groups,
         "page_obj": page_obj,
         "page_numbers": page_numbers,
@@ -1010,7 +1073,7 @@ def teachers_schedule(request):
                     "number": pair_number,
                     "lessons": [],
                 }
-                for pair_number in range(1, 7)
+                for pair_number in PAIR_NUMBERS
             ],
         }
         for item in week
@@ -1074,8 +1137,8 @@ def teachers_schedule(request):
                 number = lesson["number"]
                 group = lesson["group"]
 
-                # Отображаем номера пар с 1 по 6
-                if not 1 <= number <= 6:
+                # Показываем только номера пар, которые есть в расписании
+                if number not in PAIR_NUMBERS:
                     continue
 
                 if (
@@ -1190,13 +1253,19 @@ def group_edit(request, group_id):
 
     names = _weekday_names()
 
-    existing = {
-        (day.weekday_id, day.pair_number): day
-        for day in Day.objects.filter(
-            group=group,
-            weekday_id__in=range(1, 7),
-            pair_number__range=(1, 6),
-        )
+    # (день, номер) → {неделя: Day}: у слота либо одна пара «каждую неделю»,
+    # либо верхняя и/или нижняя
+    existing = {}
+
+    for day in Day.objects.filter(
+        group=group,
+        weekday_id__in=range(1, 7),
+        pair_number__range=(FIRST_PAIR, LAST_PAIR),
+    ):
+        existing.setdefault((day.weekday_id, day.pair_number), {})[day.week] = day
+
+    existing_ids = {
+        day.pair_id for weeks in existing.values() for day in weeks.values()
     }
 
     # В расписание ставятся только пары, привязанные к группе. Уже стоящая
@@ -1204,8 +1273,7 @@ def group_edit(request, group_id):
     # сохранение не стирало её молча
     pairs = list(
         Pair.objects.filter(
-            Q(groups=group)
-            | Q(pk__in={day.pair_id for day in existing.values()})
+            Q(groups=group) | Q(pk__in=existing_ids)
         ).select_related("teacher").order_by(
             "pair_name", "pair_id"
         ).distinct()
@@ -1223,10 +1291,33 @@ def group_edit(request, group_id):
         for hour in StudyHours.objects.filter(shift=group.shift)
     }
 
-    selected = {
-        slot: day.pair_id
-        for slot, day in existing.items()
+    def state_of(weeks):
+        """Состояние ячейки редактора по записям слота."""
+        if WEEK_EVERY in weeks:
+            day = weeks[WEEK_EVERY]
+            return {
+                "split": False, "p1": day.pair_id, "r1": day.room,
+                "p2": None, "r2": "",
+            }
+
+        upper = weeks.get(WEEK_UPPER)
+        lower = weeks.get(WEEK_LOWER)
+
+        return {
+            "split": bool(upper or lower),
+            "p1": upper.pair_id if upper else None,
+            "r1": upper.room if upper else "",
+            "p2": lower.pair_id if lower else None,
+            "r2": lower.room if lower else "",
+        }
+
+    empty_state = state_of({})
+    states = {
+        (weekday_id, number): state_of(existing.get((weekday_id, number), {}))
+        for weekday_id in range(1, 7)
+        for number in PAIR_NUMBERS
     }
+    group_room = group.room
     errors = []
     warnings = []
 
@@ -1234,35 +1325,101 @@ def group_edit(request, group_id):
         weekday_name = names.get(weekday_id, WEEKDAY_NAMES[weekday_id])
         return f"{weekday_name}, пара {number}"
 
+    def read_pair(slot, raw):
+        """Номер пары из поля формы; None — пусто или недопустимо."""
+        raw = (raw or "").strip()
+
+        if not raw:
+            return None
+
+        pair_id = _int_param(raw)
+
+        if pair_id not in pair_by_id:
+            errors.append(f"{slot_name(*slot)}: выбрана недопустимая пара.")
+            return None
+
+        return pair_id
+
+    def read_room(slot, raw):
+        text = " ".join((raw or "").split())
+
+        try:
+            return text, clean_room(raw or "")
+        except ValidationError as error:
+            errors.append(f"{slot_name(*slot)}: " + error.messages[0])
+            return text, ""
+
     if request.method == "POST":
-        chosen = {}
+        # Кабинет группы: общий для всех её пар, исключения ниже
+        # Нет поля в запросе (старая форма) — кабинет не трогаем
+        raw_room = request.POST.get("group_room", group.room)
+        group_room = " ".join(raw_room.split())
+
+        try:
+            group_room = clean_room(raw_room)
+        except ValidationError as error:
+            errors.append(error.messages[0])
+        else:
+            other = group_room_conflict(
+                group_room, group.shift_id, group.pk
+            )
+
+            if other is not None:
+                errors.append(conflict_text(group_room, other))
+
+        # Что хочет администратор: {слот: {неделя: (пара, кабинет)}}
+        wanted = {}
 
         for weekday_id in range(1, 7):
-            for number in range(1, 7):
+            for number in PAIR_NUMBERS:
                 slot = (weekday_id, number)
-                raw = request.POST.get(
-                    f"cell_{weekday_id}_{number}", ""
-                ).strip()
+                old = states[slot]
+                key = f"{weekday_id}_{number}"
 
-                if not raw:
-                    chosen[slot] = None
-                    continue
+                # Полей второй пары нет (старая форма) — прежнее состояние
+                split_raw = request.POST.get(f"split_{key}")
+                split = old["split"] if split_raw is None else split_raw == "1"
 
-                pair_id = _int_param(raw)
+                p1 = read_pair(slot, request.POST.get(f"cell_{key}", ""))
+                shown1, room1 = read_room(
+                    slot, request.POST.get(f"room_{key}", old["r1"])
+                )
+                p2, shown2, room2 = old["p2"], old["r2"], old["r2"]
 
-                if pair_id not in pair_by_id:
-                    errors.append(
-                        f"{slot_name(*slot)}: выбрана недопустимая пара."
+                if split_raw is not None or f"cell2_{key}" in request.POST:
+                    p2 = read_pair(slot, request.POST.get(f"cell2_{key}", ""))
+                    shown2, room2 = read_room(
+                        slot, request.POST.get(f"room2_{key}", "")
                     )
-                    chosen[slot] = None
+
+                if not split:
+                    # Обычная ячейка: вторая пара и её кабинет не сохраняются
+                    p2, shown2, room2 = None, "", ""
+                elif p1 is not None and p1 == p2:
+                    errors.append(
+                        f"{slot_name(*slot)}: две пары в одной ячейке должны "
+                        f"отличаться — для одинаковой оставьте обычную ячейку."
+                    )
+
+                states[slot] = {
+                    "split": split, "p1": p1, "r1": shown1,
+                    "p2": p2, "r2": shown2,
+                }
+
+                if split:
+                    wanted[slot] = {
+                        WEEK_UPPER: (p1, room1),
+                        WEEK_LOWER: (p2, room2),
+                    }
                 else:
-                    chosen[slot] = pair_id
+                    wanted[slot] = {WEEK_EVERY: (p1, room1)}
 
         # Преподаватель у двух групп в одно время — предупреждение: пара может
         # быть общей (лекция для нескольких групп), поэтому сохранять можно
         teacher_ids = {
             pair_by_id[pair_id].teacher_id
-            for pair_id in chosen.values()
+            for weeks in wanted.values()
+            for pair_id, _room in weeks.values()
             if pair_id is not None
         }
 
@@ -1280,45 +1437,72 @@ def group_edit(request, group_id):
                     other.pair_number,
                     other.pair.teacher_id,
                 )
-                busy.setdefault(key, []).append(other.group.group_name)
+                busy.setdefault(key, []).append(other)
 
-        for (weekday_id, number), pair_id in chosen.items():
-            if pair_id is None:
-                continue
+        for (weekday_id, number), weeks in wanted.items():
+            for week, (pair_id, _room) in weeks.items():
+                if pair_id is None:
+                    continue
 
-            pair = pair_by_id[pair_id]
-            other_groups = busy.get((weekday_id, number, pair.teacher_id))
+                pair = pair_by_id[pair_id]
+                names_busy = sorted({
+                    other.group.group_name
+                    for other in busy.get(
+                        (weekday_id, number, pair.teacher_id), []
+                    )
+                    if weeks_compatible(week, other.week)
+                })
 
-            if other_groups:
-                warnings.append(
-                    f"{slot_name(weekday_id, number)}: "
-                    f"{pair.teacher.teacher_name} в это же время ведёт "
-                    f"занятие у группы {', '.join(sorted(other_groups))}."
-                )
-
-        selected = chosen
+                if names_busy:
+                    suffix = (
+                        f" ({WEEK_LABELS[week]} неделя)" if week else ""
+                    )
+                    warnings.append(
+                        f"{slot_name(weekday_id, number)}{suffix}: "
+                        f"{pair.teacher.teacher_name} в это же время ведёт "
+                        f"занятие у группы {', '.join(names_busy)}."
+                    )
 
         if not errors:
             try:
                 with transaction.atomic():
-                    for slot, pair_id in chosen.items():
-                        day = existing.get(slot)
+                    if group_room != group.room:
+                        group.room = group_room
+                        group.save(update_fields=["room"])
 
-                        if pair_id is None:
-                            if day is not None:
+                    for slot, weeks in wanted.items():
+                        current = existing.get(slot, {})
+
+                        # Сначала удаляем лишнее, потом пишем: так не
+                        # столкнёмся с уникальностью слота
+                        for week, day in current.items():
+                            if weeks.get(week, (None, ""))[0] is None:
                                 day.delete()
 
-                        elif day is None:
-                            Day.objects.create(
-                                group=group,
-                                weekday_id=slot[0],
-                                pair_number=slot[1],
-                                pair_id=pair_id,
-                            )
+                        for week, (pair_id, room) in weeks.items():
+                            if pair_id is None:
+                                continue
 
-                        elif day.pair_id != pair_id:
-                            day.pair_id = pair_id
-                            day.save(update_fields=["pair"])
+                            # Такой же кабинет, как у группы, исключением
+                            # не считается
+                            if room_key(room) == room_key(group_room):
+                                room = ""
+
+                            day = current.get(week)
+
+                            if day is None:
+                                Day.objects.create(
+                                    group=group,
+                                    weekday_id=slot[0],
+                                    pair_number=slot[1],
+                                    pair_id=pair_id,
+                                    room=room,
+                                    week=week,
+                                )
+                            elif day.pair_id != pair_id or day.room != room:
+                                day.pair_id = pair_id
+                                day.room = room
+                                day.save(update_fields=["pair", "room"])
 
             except DatabaseError as exc:
                 errors.append(f"Не удалось сохранить расписание: {exc}")
@@ -1341,10 +1525,18 @@ def group_edit(request, group_id):
                 {
                     "number": number,
                     "field": f"cell_{weekday_id}_{number}",
+                    "field2": f"cell2_{weekday_id}_{number}",
+                    "split_field": f"split_{weekday_id}_{number}",
                     "time": hours.get(number),
-                    "selected": selected.get((weekday_id, number)),
+                    "selected": states[(weekday_id, number)]["p1"],
+                    "selected2": states[(weekday_id, number)]["p2"],
+                    "split": states[(weekday_id, number)]["split"],
+                    "room_field": f"room_{weekday_id}_{number}",
+                    "room_field2": f"room2_{weekday_id}_{number}",
+                    "room": states[(weekday_id, number)]["r1"],
+                    "room2": states[(weekday_id, number)]["r2"],
                 }
-                for number in range(1, 7)
+                for number in PAIR_NUMBERS
             ],
         }
         for weekday_id in range(1, 7)
@@ -1353,6 +1545,8 @@ def group_edit(request, group_id):
     context = {
         "group": group,
         "edit_days": edit_days,
+        "group_room": group_room,
+        "room_max": ROOM_MAX,
         "pair_options": pairs,
         "attached_count": len(attached_ids),
         "errors": errors,
@@ -1481,8 +1675,8 @@ def _save_move(data, group, day, record, number, existing, changes):
     if new_day is None:
         return "Укажите дату переноса."
 
-    if new_number not in range(1, 7):
-        return "Номер пары должен быть от 1 до 6."
+    if new_number not in PAIR_NUMBERS:
+        return f"Номер пары должен быть {pair_range_text()}."
 
     if (new_day, new_number) == (day, number):
         return "Выберите другой день или другую пару."
@@ -1498,7 +1692,9 @@ def _save_move(data, group, day, record, number, existing, changes):
     slots = resolve_group_day(
         group.pk,
         new_day,
-        group_days_by_number(group.pk, new_day.isoweekday()),
+        group_days_by_number(
+            group.pk, new_day.isoweekday(), week_kind(new_day)
+        ),
         new_changes,
         skip_change_id=skip_id,
     )
@@ -1559,7 +1755,7 @@ def group_change(request, group_id):
     number = _int_param(data.get("number"))
     kind = data.get("kind")
 
-    if day is None or number not in range(1, 7) or kind not in CHANGE_KINDS:
+    if day is None or number not in PAIR_NUMBERS or kind not in CHANGE_KINDS:
         raise Http404
 
     # Прежние адреса со страницей изменения ведут в режим правок
@@ -1577,7 +1773,9 @@ def group_change(request, group_id):
         messages.error(request, f"В этот день пар нет. {reason}")
         return _changes_page(group.pk, day)
 
-    record = group_days_by_number(group.pk, day.isoweekday()).get(number)
+    record = group_days_by_number(
+        group.pk, day.isoweekday(), week_kind(day)
+    ).get(number)
 
     if record is None:
         messages.error(
@@ -1925,6 +2123,54 @@ def _save_user(request, User, group_by_id, teacher_tag_by_id, valid_roles):
         messages.info(request, f"Пользователь {name}: изменений нет.")
 
 
+def _edit_user(request, target, form):
+    """Сохраняет правку ФИО, почты и доступа; True, если всё сохранено."""
+    if not form.is_valid():
+        return False
+
+    data = form.cleaned_data
+    name = target.get_username()
+
+    try:
+        changed_email = update_account(
+            target,
+            data["last_name"],
+            data["first_name"],
+            data["patronymic"],
+            data["username"],
+            data["is_active"],
+        )
+    except DatabaseError:
+        form.add_error(None, "Не удалось сохранить. Попробуйте ещё раз.")
+
+        return False
+
+    messages.success(request, f"Пользователь {name}: данные сохранены.")
+
+    if not target.is_active:
+        messages.warning(
+            request, f"Доступ пользователя {target.get_username()} закрыт: "
+            "войти он не сможет."
+        )
+
+    if changed_email:
+        old, new = changed_email
+        failed = send_email_change_notice(full_name(target) or new, old, new)
+
+        if failed:
+            messages.warning(
+                request,
+                "Почта изменена, но письмо не ушло на: "
+                + ", ".join(failed) + ".",
+            )
+        else:
+            messages.info(
+                request, f"Письмо об изменении отправлено на {old} и {new}."
+            )
+
+    return True
+
+
 @staff_required
 def users_roles(request):
     User = get_user_model()
@@ -1947,6 +2193,8 @@ def users_roles(request):
 
     page = request.POST.get("page") or request.GET.get("page") or ""
     new_user_form = None
+    edit_form = None
+    edit_user_id = _int_param(request.GET.get("edit"))
 
     if request.method == "POST":
         action = request.POST.get("action", "")
@@ -1992,6 +2240,32 @@ def users_roles(request):
             # При ошибке форма показывается снова с введёнными данными
             _remember_new_user(request, new_user_form)
 
+        elif action == "edit_user":
+            target = get_user_model().objects.filter(
+                pk=_int_param(request.POST.get("user_id"))
+            ).first()
+
+            if target is None:
+                messages.error(request, "Пользователь не найден.")
+
+                return redirect(_users_url(page))
+
+            edit_form = UserEditForm(
+                target, request.POST,
+                can_disable=not (
+                    target.is_superuser or target.pk == request.user.pk
+                ),
+            )
+            edit_user_id = target.pk
+
+            if _edit_user(request, target, edit_form):
+                kept = _parse_user_filters(
+                    QueryDict(request.POST.get("qs", "")), set(group_by_id),
+                    group_tag_ids, set(teacher_tag_by_id),
+                )
+
+                return redirect(_users_url(page, _filters_query(kept)))
+
         elif action == "save_user":
             _save_user(
                 request, User, group_by_id, teacher_tag_by_id, valid_roles
@@ -2031,6 +2305,30 @@ def users_roles(request):
     page_obj = paginator.get_page(page)
     new_id = _int_param(request.GET.get("new"))
 
+    # Форма правки открывается у одного пользователя за раз
+    if edit_form is None and edit_user_id:
+        target = next(
+            (u for u in page_obj.object_list if u.pk == edit_user_id), None
+        )
+
+        if target is not None:
+            edit_form = UserEditForm(
+                target,
+                initial={
+                    "last_name": target.last_name,
+                    "first_name": target.first_name,
+                    "patronymic": (
+                        target.profile.patronymic
+                        if hasattr(target, "profile") else ""
+                    ),
+                    "username": target.get_username(),
+                    "is_active": target.is_active,
+                },
+                can_disable=not (
+                    target.is_superuser or target.pk == request.user.pk
+                ),
+            )
+
     # Кто какие группы курирует — из уже загруженного списка групп
     curated = {}
 
@@ -2053,6 +2351,11 @@ def users_roles(request):
             "is_student": role == ROLE_STUDENT,
             "is_teacher": role == ROLE_TEACHER,
             "is_new": item.pk == new_id,
+            "is_active": item.is_active,
+            "edit_form": (
+                edit_form if edit_form is not None
+                and item.pk == edit_user_id else None
+            ),
             "teacher_id": current_teacher_id,
             "teacher_tag_id": (
                 item.profile.teacher.teacher_tag_id
@@ -2107,6 +2410,7 @@ WORKSHOP_FORMS = {
     "group": GroupForm,
     "pair": PairForm,
     "semester": SemesterForm,
+    "duty": DutyForm,
 }
 
 FORM_PREFIXES = {
@@ -2115,6 +2419,7 @@ FORM_PREFIXES = {
     "group": "group",
     "pair": "pair",
     "semester": "semester",
+    "duty": "duty",
 }
 
 
@@ -2135,6 +2440,7 @@ WORKSHOP_CARDS = (
     ("group", "Группы", "add_group", "группу"),
     ("pair", "Пары", "add_pair", "пару"),
     ("semester", "Семестры", "add_semester", "семестр"),
+    ("duty", "Дежурные", "add_duty", "дежурство"),
 )
 
 EDIT_ACTIONS = ("update_item", "delete_item", "delete_confirmed")
@@ -2361,7 +2667,7 @@ def _time_table_context(
                 shift_id=shift_id
             )
         }
-        row_count = 5
+        row_count = BREAK_COUNT
         number_label = "Номер перемены"
     else:
         records = {
@@ -2370,7 +2676,7 @@ def _time_table_context(
                 shift_id=shift_id
             )
         }
-        row_count = 6
+        row_count = LAST_PAIR
         number_label = "Номер пары"
 
     rows = []
@@ -2422,7 +2728,7 @@ def _time_table_context(
 def _parse_time_updates(request, shift_id, mode):
     updates = []
     errors = []
-    row_count = 5 if mode == "break" else 6
+    row_count = BREAK_COUNT if mode == "break" else LAST_PAIR
 
     for number in range(1, row_count + 1):
         start_raw = request.POST.get(
@@ -2587,7 +2893,7 @@ def schedule_overview(request):
         .filter(
             group_id__in=[group.group_id for group in groups],
             weekday_id__in=range(1, 7),
-            pair_number__range=(1, 6),
+            pair_number__range=(FIRST_PAIR, LAST_PAIR),
         )
         .select_related("pair", "pair__teacher")
         .order_by("pair_number")
@@ -2596,7 +2902,9 @@ def schedule_overview(request):
     for day in days:
         lessons.setdefault((day.group_id, day.weekday_id), []).append({
             "number": day.pair_number,
-            "name": day.pair.pair_name,
+            "name": day.pair.pair_name + (
+                f" ({WEEK_SHORT[day.week]})" if day.week else ""
+            ),
             "teacher": day.pair.teacher.teacher_name,
         })
 
@@ -2651,6 +2959,7 @@ def workshop(request):
         "add_group": "group",
         "add_pair": "pair",
         "add_semester": "semester",
+        "add_duty": "duty",
     }
 
     active_key = form_actions.get(action)

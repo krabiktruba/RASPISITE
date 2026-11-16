@@ -131,7 +131,7 @@
                                     <div class="pair-name">
                                         {% if pair.lessons %}
                                             {% for lesson in pair.lessons %}
-                                                <div>
+                                                <div{% if lesson.description %} class="has-description" title="{{ lesson.description }}"{% endif %}>
                                                     {{ lesson.subject }}
                                                     {% if lesson.status_label %}
                                                         <span class="status-badge status-{{ lesson.status }}">{{ lesson.status_label }}</span>
@@ -148,6 +148,7 @@
                                             {% for lesson in pair.lessons %}
                                                 <div>
                                                     {{ lesson.group.group_name }}
+                                                    {% if lesson.room %}<span class="pair-room">{{ lesson.room|room_label }}</span>{% endif %}
                                                     {% if lesson.note %}
                                                         <span class="pair-note">{{ lesson.note }}</span>
                                                     {% endif %}

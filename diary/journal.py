@@ -31,8 +31,15 @@ from schedule.models import (
     Semester,
 )
 from schedule.semesters import semester_at, semesters_of_course
+from schedule.weeks import load_semesters, week_filter, week_kind
 
-from .lessons import _resolve, holiday_dates, is_school_day, teacher_group_ids
+from .lessons import (
+    _resolve,
+    holiday_dates,
+    is_school_day,
+    subject_notes,
+    teacher_group_ids,
+)
 from .models import MARK_SCORE, Mark
 
 COURSES = (1, 2, 3, 4)
@@ -214,26 +221,31 @@ def _lessons_of(groups, days):
         if change.new_calendar_id and change.new_calendar.date != change.calendar.date:
             changes_by_date[change.new_calendar.date].append(change)
 
-    schedule = defaultdict(lambda: defaultdict(dict))
+    schedule = defaultdict(lambda: defaultdict(list))
 
     for record in Day.objects.filter(
         group_id__in=group_ids,
         pair_number__range=(FIRST_PAIR, LAST_PAIR),
     ).select_related("pair", "pair__teacher", "group"):
-        schedule[record.group_id][record.weekday_id][record.pair_number] = record
+        schedule[record.group_id][record.weekday_id].append(record)
 
+    semesters = load_semesters()
     lessons = []
 
     for day in days:
         if not is_school_day(day, holidays):
             continue
 
+        allowed = week_filter(week_kind(day, semesters))
+
         for group_id in group_ids:
+            slots = {
+                record.pair_number: record
+                for record in schedule[group_id].get(day.isoweekday(), [])
+                if record.week in allowed
+            }
             lessons += _resolve(
-                group_id,
-                day,
-                schedule[group_id].get(day.isoweekday(), {}),
-                changes_by_date.get(day, []),
+                group_id, day, slots, changes_by_date.get(day, [])
             )
 
     return lessons
@@ -322,6 +334,8 @@ def build_journal(user, role, filters, today, general=False):
                 "number": lesson["number"],
                 "pair_id": lesson["pair_id"],
                 "subject": lesson["subject"],
+                "description": lesson["description"],
+                "pair_teacher_id": lesson["pair_teacher_id"],
                 "teacher": lesson["teacher"],
                 "note": lesson["note"],
                 "groups": set(),
@@ -362,6 +376,7 @@ def build_journal(user, role, filters, today, general=False):
         "subject_options": options,
         "subjects": subjects,
         "columns": ordered,
+        "subject_notes": subject_notes(ordered, user),
         "day_heads": day_heads,
         "rows": table["rows"],
         "scores_count": len(scores),

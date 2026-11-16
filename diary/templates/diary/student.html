@@ -12,7 +12,7 @@
 
         {% if group_id %}
             <div class="page-head-actions">
-                <a class="date-nav-link" href="{% url 'group_schedule' group_id=group_id %}?date={{ week_date }}">Расписание</a>
+                {% include "mode_switch.html" %}
 
                 <nav class="date-nav" aria-label="Недели">
                     <a class="date-nav-link" href="?date={{ prev_week_iso }}">← Неделя</a>
@@ -64,7 +64,8 @@
                                     <span class="main">
                                         {{ lesson.subject }}
                                         {% if lesson.status_label %}<span class="role-badge">{{ lesson.status_label }}</span>{% endif %}
-                                        <span class="student-lesson-teacher">{{ lesson.teacher|person }}{% if lesson.note %} · {{ lesson.note }}{% endif %}</span>
+                                        <span class="student-lesson-teacher">{{ lesson.teacher|person }}{% if lesson.room %} · {{ lesson.room|room_label }}{% endif %}{% if lesson.note %} · {{ lesson.note }}{% endif %}</span>
+                                        {% if lesson.description %}<span class="student-lesson-desc">{{ lesson.description }}</span>{% endif %}
                                     </span>
                                     <span class="student-mark{% if lesson.mark %} mark-{{ lesson.mark.kind }}{% endif %}"{% if lesson.mark %} title="{{ lesson.mark.title }}"{% endif %}>{{ lesson.mark.text }}</span>
                                 </li>

@@ -1,0 +1,16 @@
+{# Переключатель «Расписание | Дневник»: та же группа и та же неделя #}
+{% if mode_switch %}
+    <div class="mode-switch" role="group" aria-label="Режим страницы">
+        {% if mode_switch.current == "schedule" %}
+            <span class="mode-switch-item is-active" aria-current="page">Расписание</span>
+        {% else %}
+            <a class="mode-switch-item" href="{{ mode_switch.schedule_url }}">Расписание</a>
+        {% endif %}
+
+        {% if mode_switch.current == "diary" %}
+            <span class="mode-switch-item is-active" aria-current="page">Дневник</span>
+        {% else %}
+            <a class="mode-switch-item" href="{{ mode_switch.diary_url }}">Дневник</a>
+        {% endif %}
+    </div>
+{% endif %}

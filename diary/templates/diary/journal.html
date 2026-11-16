@@ -57,7 +57,7 @@
                     <span class="journal-flag is-ill">Б</span> болеет</span>
             </div>
 
-            <div class="diary-scroll">
+            <div class="diary-scroll" data-scroll-x>
                 <table class="diary-grid journal-grid" style="width: {{ table_width }}px">
                     <colgroup>
                         <col class="diary-col-student">
@@ -80,7 +80,8 @@
                         <tr class="diary-row-lesson">
                             {% for column in columns %}
                                 <th class="diary-lesson-head{% if column.first_of_day %} is-first{% endif %}"
-                                    title="{{ column.subject }} — {{ column.teacher }}{% if column.note %} ({{ column.note }}){% endif %}">
+                                    title="{{ column.subject }} — {{ column.teacher }}{% if column.note %} ({{ column.note }}){% endif %}{% if column.description %}
+{{ column.description }}{% endif %}">
                                     <a href="{% url 'diary_group' group_id=column.link_group %}?date={{ column.day_iso }}">
                                         <span class="diary-lesson-no">{{ column.number }} пара</span>
                                         <span class="diary-lesson-text">{{ column.subject }}</span>
@@ -112,6 +113,8 @@
             </div>
         {% endif %}
     </section>
+
+    {% include "diary/subject_notes.html" %}
 
 </div>
 {% endblock %}

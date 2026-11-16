@@ -10,7 +10,13 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+import os
+import sys
 from pathlib import Path
+
+from django.core.exceptions import ImproperlyConfigured
+
+from .env import env_bool, env_list
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -19,13 +25,44 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-ezbce&9=yinujbj+7l6n#+daptysb9w#i9&+&zvw4y-(%t5d+j'
+# Все настройки, которые различаются у разработчика и на сервере, читаются из
+# переменных окружения. Без них сайт работает как раньше (режим разработки).
+#
+#   DJANGO_DEBUG          1 / 0 (по умолчанию 1: режим разработки)
+#   DJANGO_SECRET_KEY     секретный ключ (обязателен при DJANGO_DEBUG=0)
+#   DJANGO_ALLOWED_HOSTS  адреса через запятую (при DJANGO_DEBUG=0)
+#   DJANGO_HTTPS          1 / 0: сайт открыт по https (по умолчанию = не DEBUG)
+#   DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
+_DEV_SECRET_KEY = (
+    'django-insecure-ezbce&9=yinujbj+7l6n#+daptysb9w#i9&+&zvw4y-(%t5d+j'
+)
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env_bool(os.environ, 'DJANGO_DEBUG', True)
 
-ALLOWED_HOSTS = []
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', '') or _DEV_SECRET_KEY
+
+ALLOWED_HOSTS = env_list(os.environ, 'DJANGO_ALLOWED_HOSTS')
+
+if not DEBUG and 'test' not in sys.argv:
+    # Рабочий режим с ключом из репозитория или без адресов — небезопасно
+    if SECRET_KEY == _DEV_SECRET_KEY:
+        raise ImproperlyConfigured(
+            'DJANGO_DEBUG=0: задайте свой DJANGO_SECRET_KEY.'
+        )
+
+    if not ALLOWED_HOSTS:
+        raise ImproperlyConfigured(
+            'DJANGO_DEBUG=0: задайте DJANGO_ALLOWED_HOSTS.'
+        )
+
+# Cookie только по https и запрет угадывания типа файла — для сайта в сети
+HTTPS = env_bool(os.environ, 'DJANGO_HTTPS', not DEBUG)
+
+SESSION_COOKIE_SECURE = HTTPS
+CSRF_COOKIE_SECURE = HTTPS
+SESSION_COOKIE_HTTPONLY = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
 
 
 # Application definition
@@ -78,11 +115,11 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'schedule_db',
-        'USER': 'postgres',
-        'PASSWORD': 'admin',
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'NAME': os.environ.get('DB_NAME', 'schedule_db'),
+        'USER': os.environ.get('DB_USER', 'postgres'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', 'admin'),
+        'HOST': os.environ.get('DB_HOST', 'localhost'),
+        'PORT': os.environ.get('DB_PORT', '5432'),
     }
 }
 
@@ -124,6 +161,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Сюда складывает файлы команда collectstatic (нужна на сервере при DEBUG=0)
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
 
 # Авторизация
 LOGIN_URL = 'login'
@@ -156,8 +196,6 @@ MAILERS = {
 # миграциями, поэтому в тестовой базе их нужно создать прямо из моделей. Таблицы Profile
 # и AccessCode ссылаются на auth_user, поэтому миграции отключаются у всех
 # приложений сразу: тогда Django создаёт все таблицы вместе из моделей.
-import sys
-
 if "test" in sys.argv:
     MIGRATION_MODULES = {
         label: None
@@ -172,3 +210,28 @@ if "test" in sys.argv:
             "diary",
         )
     }
+
+
+# ---------------------------------------------------------------------------
+# Письма сайта
+# ---------------------------------------------------------------------------
+# Пока ящик не настроен, письма печатаются в окно, где запущен сервер
+# (python manage.py runserver). Чтобы отправлять настоящие, задайте
+# переменные окружения: EMAIL_HOST_USER (адрес Gmail сайта) и
+# EMAIL_HOST_PASSWORD (пароль приложения Google).
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+
+if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD and "test" not in sys.argv:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = "smtp.gmail.com"
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+else:
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER or "raspisite@localhost"
+SITE_NAME = "RASPISITE"
+
+# Ссылка восстановления пароля живёт час
+PASSWORD_RESET_TIMEOUT = 60 * 60

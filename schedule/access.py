@@ -215,12 +215,14 @@ def full_name(user, profile=None):
 
 
 def create_account(role, last_name, first_name, patronymic, email,
-                   password, group=None):
+                   password, group=None, password_hash=None):
     """Создаёт студента или преподавателя: пользователя, профиль и связи.
 
     Логин — почта Gmail (email уже приведён к единому виду).
-    Студент привязывается к группе. Преподаватель получает запись Teacher
-    с полным ФИО и, если выбрана группа, становится её куратором.
+    Если дан password_hash (самостоятельная регистрация), пароль берётся
+    из него как есть. Студент привязывается к группе. Преподаватель
+    получает запись Teacher с полным ФИО и, если выбрана группа, становится
+    её куратором.
     """
     User = get_user_model()
 
@@ -232,6 +234,10 @@ def create_account(role, last_name, first_name, patronymic, email,
             first_name=first_name,
             last_name=last_name,
         )
+
+        if password_hash:
+            user.password = password_hash
+            user.save(update_fields=["password"])
 
         if role == ROLE_TEACHER:
             teacher = Teacher.objects.create(
@@ -260,3 +266,41 @@ def create_account(role, last_name, first_name, patronymic, email,
             )
 
     return user
+
+
+def update_account(user, last_name, first_name, patronymic, email, is_active):
+    """Сохраняет правку пользователя: ФИО, почту (она же логин), доступ.
+
+    У преподавателя заодно обновляется запись Teacher: по ней его имя видно
+    в расписании. Возвращает (прежняя почта, новая почта) или None, если
+    почта не менялась.
+    """
+    old_email = user.get_username()
+
+    with transaction.atomic():
+        user.last_name = last_name
+        user.first_name = first_name
+        user.username = email
+
+        # Старый логин без «@» (например, «admin») адресом почты не делаем
+        if "@" in email:
+            user.email = email
+
+        user.is_active = is_active
+        user.save()
+
+        profile, _ = Profile.objects.get_or_create(user=user)
+        profile.patronymic = patronymic
+        profile.save(update_fields=["patronymic"])
+
+        teacher_id = own_teacher_id(user)
+
+        if teacher_id:
+            Teacher.objects.filter(pk=teacher_id).update(
+                teacher_name=" ".join(
+                    part for part in (last_name, first_name, patronymic)
+                    if part
+                )
+            )
+
+    return (old_email, email) if old_email != email else None

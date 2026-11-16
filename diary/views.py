@@ -5,7 +5,7 @@ from datetime import timedelta
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -34,8 +34,11 @@ from schedule.models import (
     Profile,
 )
 
+from schedule.modes import MODE_DIARY, remember_mode, switch_on_diary
+
 from .lessons import (
     can_grade,
+    subject_notes,
     teacher_day_lessons,
     teacher_group_ids,
     teaches_in_group,
@@ -222,6 +225,7 @@ def diary_group(request, group_id):
                 "lesson": lesson,
                 "number": lesson["number"],
                 "subject": lesson["subject"],
+                "description": lesson["description"],
                 "teacher": lesson["teacher"],
                 "note": lesson["note"],
                 "name": (
@@ -268,6 +272,7 @@ def diary_group(request, group_id):
             raise PermissionDenied
 
         items = []
+        conflicts = 0
 
         for column in editable_columns:
             for student in students:
@@ -276,18 +281,52 @@ def diary_group(request, group_id):
                 if field not in request.POST:
                     continue
 
-                entered[field] = request.POST[field]
+                raw = request.POST[field]
+                entered[field] = raw
+                current = marks.get(slot(student, column))
+                shown = current.label if current else ""
+
+                # Форма присылает и то, что было в ячейке при открытии. Ячейку,
+                # которую не меняли, не трогаем: устаревшая страница не должна
+                # затереть оценку, поставленную за это время другим
+                original = request.POST.get(f"o_{field}")
+
+                if original is not None and raw.strip() == original.strip():
+                    entered.pop(field)
+                    continue
 
                 try:
-                    value = parse_mark(request.POST[field])
+                    value = parse_mark(raw)
                 except ValueError as error:
                     errors[field] = str(error)
                     continue
 
+                if original is not None and original.strip() != shown:
+                    now = (current.kind, current.score) if current else None
+
+                    if value != now:
+                        errors[field] = (
+                            "Пока вы редактировали, оценку изменили: сейчас "
+                            f"«{shown or 'пусто'}». Проверьте и сохраните."
+                        )
+                        conflicts += 1
+                        continue
+
                 items.append((student["user"].pk, column["lesson"], value))
 
         if not errors:
-            saved = _save_marks(request.user, items, marks)
+            try:
+                saved = _save_marks(request.user, items, marks)
+            except IntegrityError:
+                # Две отправки одной ячейки одновременно: вторая уже не нужна
+                messages.error(
+                    request,
+                    "Оценки изменили одновременно с вами. Таблица обновлена: "
+                    "проверьте и повторите ввод.",
+                )
+
+                return redirect(request.get_full_path())
+
             messages.success(
                 request,
                 f"Сохранено записей: {saved}." if saved else "Изменений нет.",
@@ -297,7 +336,10 @@ def diary_group(request, group_id):
 
         messages.error(
             request,
-            "Исправьте отмеченные ячейки: пока ничего не сохранено.",
+            "Пока вы редактировали, оценки изменили. Ничего не сохранено: "
+            "проверьте отмеченные ячейки."
+            if conflicts and conflicts == len(errors)
+            else "Исправьте отмеченные ячейки: пока ничего не сохранено.",
         )
 
     rows = []
@@ -313,6 +355,7 @@ def diary_group(request, group_id):
                 "field": field,
                 "column": column["name"],
                 "text": entered.get(field, mark.label if mark else ""),
+                "original": mark.label if mark else "",
                 "kind": mark.kind if mark else "",
                 "editable": column["editable"],
                 "error": errors.get(field, ""),
@@ -333,6 +376,9 @@ def diary_group(request, group_id):
         "days": [day for day in days if day["lessons"]],
         "rows": rows,
         "has_lessons": bool(columns),
+        "subject_notes": subject_notes(
+            [column["lesson"] for column in columns], request.user
+        ),
         "can_edit": bool(editable_columns),
         "table_width": STUDENT_COLUMN_WIDTH + MARK_COLUMN_WIDTH * len(columns),
         "input_hint": INPUT_HINT,
@@ -341,6 +387,9 @@ def diary_group(request, group_id):
         "prev_week_iso": prev_monday.isoformat(),
         "next_week_iso": next_monday.isoformat(),
         "is_current_week": monday == week_start(today),
+        "mode_switch": switch_on_diary(
+            group.pk, monday.isoformat(), _group_url(group.pk, monday)
+        ),
     }
 
     return render(request, "diary/group.html", context)
@@ -434,7 +483,7 @@ def _student_diary(request, today):
         student_week(request.user, group_id, monday) if group_id else ([], None)
     )
 
-    return render(request, "diary/student.html", {
+    response = render(request, "diary/student.html", {
         "group_id": group_id,
         "days": days,
         "summary": summary,
@@ -444,4 +493,18 @@ def _student_diary(request, today):
         "next_week_iso": (monday + timedelta(days=7)).isoformat(),
         "is_current_week": monday == week_start(today),
         "input_hint": INPUT_HINT,
+        "mode_switch": (
+            switch_on_diary(
+                group_id,
+                monday.isoformat(),
+                f"{reverse('diary_home')}?date={monday.isoformat()}",
+            )
+            if group_id else None
+        ),
     })
+
+    # Студент открыл дневник: «Моё расписание» в меню поведёт сюда же
+    if group_id:
+        remember_mode(request, response, MODE_DIARY)
+
+    return response

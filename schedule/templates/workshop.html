@@ -78,7 +78,7 @@
                     <fieldset>
                         <legend>{{ time_table.number_label }}</legend>
 
-                        <div class="workshop-table-wrap">
+                        <div class="workshop-table-wrap" data-scroll-x>
                             <table>
                                 <thead>
                                     <tr>
@@ -136,6 +136,8 @@
             {% include "workshop_card.html" with card=cards.group %}
 
             {% include "workshop_card.html" with card=cards.pair %}
+
+            {% include "workshop_card.html" with card=cards.duty %}
 
         </div>
 

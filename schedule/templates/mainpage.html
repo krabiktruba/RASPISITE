@@ -41,8 +41,7 @@
 
             <!-- Выбор раздела: расписание или дневник -->
             <nav class="hero-choice" aria-label="Что открыть">
-                <a class="hero-choice-link"
-                   href="{% if my_group_id %}{% url 'group_schedule' group_id=my_group_id %}{% else %}{% url 'groups' %}{% endif %}">
+                <a class="hero-choice-link" href="{{ my_schedule_url }}">
                     <span class="hero-choice-name">Расписание</span>
                     <span class="hero-choice-note">пары и календарь</span>
                 </a>

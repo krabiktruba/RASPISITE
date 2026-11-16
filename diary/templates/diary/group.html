@@ -20,7 +20,7 @@
         </div>
 
         <div class="page-head-actions">
-            <a class="date-nav-link" href="{% url 'group_schedule' group_id=group.pk %}?date={{ week_date }}">Расписание группы</a>
+            {% include "mode_switch.html" %}
             <a class="date-nav-link" href="{% url 'diary_journal' %}?f=1&amp;week=1&amp;date={{ week_date }}&amp;group={{ group.pk }}">Журнал группы</a>
 
             <nav class="date-nav" aria-label="Недели">
@@ -52,7 +52,7 @@
                     {% endif %}
                 </div>
 
-                <div class="diary-scroll">
+                <div class="diary-scroll" data-scroll-x>
                     <table class="diary-grid" style="width: {{ table_width }}px">
                         <colgroup>
                             <col class="diary-col-student">
@@ -71,7 +71,8 @@
                                 {% for day in days %}
                                     {% for lesson in day.lessons %}
                                         <th class="diary-lesson-head{% if lesson.first_of_day %} is-first{% endif %}"
-                                            title="{{ lesson.subject }} — {{ lesson.teacher }}{% if lesson.note %} ({{ lesson.note }}){% endif %}">
+                                            title="{{ lesson.subject }} — {{ lesson.teacher }}{% if lesson.note %} ({{ lesson.note }}){% endif %}{% if lesson.description %}
+{{ lesson.description }}{% endif %}">
                                             <span class="diary-lesson-no">{{ lesson.number }} пара</span>
                                             <span class="diary-lesson-text">{{ lesson.subject }}</span>
                                         </th>
@@ -97,6 +98,8 @@
                                                        autocomplete="off"
                                                        aria-label="Оценка: {{ row.name }}"
                                                        {% if value.error %}title="{{ value.error }}"{% endif %}>
+                                                <input type="hidden" name="o_{{ value.field }}"
+                                                       value="{{ value.original }}">
                                             {% else %}
                                                 {{ value.text }}
                                             {% endif %}
@@ -110,6 +113,8 @@
             </form>
         {% endif %}
     </section>
+
+    {% include "diary/subject_notes.html" %}
 
 </div>
 {% endblock %}

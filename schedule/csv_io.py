@@ -12,7 +12,10 @@
     pairs     — пары: предмет с преподавателем и группа, к которой пара
                 привязана (общая пара — по строке на каждую группу; пара без
                 группы записывается с пустой группой);
-    schedule  — расписание: какая пара стоит в какой день и на какой паре;
+    schedule  — расписание: какая пара стоит в какой день и на какой паре.
+                Столбцы «Неделя» (каждая / верхняя / нижняя) и «Кабинет»
+                необязательны: в старых файлах без них пары идут каждую
+                неделю, а кабинеты остаются как есть;
     diary     — оценки дневника (отдельная карточка Кузни; формат описан в
                 diary/csv_marks.py). Загружается в двух режимах: «наложить»
                 (записи из файла добавляются и обновляются, остальные
@@ -36,11 +39,20 @@ import io
 import zipfile
 from datetime import datetime
 
+from django.core.exceptions import ValidationError
 from django.db import DatabaseError, transaction
 from django.db.models import Prefetch
 
 from .dates import WEEKDAY_NAMES
 from .group_names import check_group_name
+from .limits import BREAK_COUNT, FIRST_PAIR, LAST_PAIR
+from .rooms import clean_room, room_key
+from .weeks import (
+    WEEK_BY_NAME,
+    WEEK_EVERY,
+    WEEK_LABELS,
+    compatible as weeks_compatible,
+)
 from .models import (
     BreakHours,
     Course,
@@ -292,10 +304,14 @@ def _export_schedule():
             day.pair_number,
             day.pair.pair_name,
             day.pair.teacher.teacher_name,
+            WEEK_LABELS[day.week],
+            day.room,
         ]
         for day in Day.objects.select_related(
             "group", "pair", "pair__teacher"
-        ).order_by("group__group_name", "weekday_id", "pair_number")
+        ).order_by(
+            "group__group_name", "weekday_id", "pair_number", "week"
+        )
     ]
 
 
@@ -311,7 +327,9 @@ def _row_bells(line, data, report, state):
 
     is_break = kind == KIND_BREAK.casefold()
     shift_id = _number(data, "Смена", 1, 99)
-    number = _number(data, "Номер", 1, 5 if is_break else 6)
+    number = _number(
+        data, "Номер", FIRST_PAIR, BREAK_COUNT if is_break else LAST_PAIR
+    )
     start = _time(data, "Начало")
     end = _time(data, "Конец")
 
@@ -427,14 +445,39 @@ def _row_pairs(line, data, report, state):
     _upsert(PairGroup, {"pair": pair, "group": group}, {}, report)
 
 
+def _week(data):
+    """Значение столбца «Неделя»; нет столбца или пусто — каждая неделя."""
+    raw = _clean(data.get("Неделя") or "").casefold()
+
+    if raw in WEEK_BY_NAME:
+        return WEEK_BY_NAME[raw]
+
+    raise RowError(
+        f"«Неделя»: «{raw}» не подходит (нужно: каждая, верхняя или нижняя)"
+    )
+
+
 def _row_schedule(line, data, report, state):
     group = _group(_need(data, "Группа", 100))
     weekday_id = _weekday(data, "День недели")
-    number = _number(data, "Номер пары", 1, 6)
+    number = _number(data, "Номер пары", FIRST_PAIR, LAST_PAIR)
     subject = _need(data, "Предмет", 150)
     teacher = _teacher(_need(data, "Преподаватель", 150))
+    week = _week(data)
 
-    _duplicate(state, (group.pk, weekday_id, number), line)
+    # Нет столбца «Кабинет» — кабинет не трогаем
+    room = None
+
+    if data.get("Кабинет") is not None:
+        try:
+            room = clean_room(data["Кабинет"])
+        except ValidationError as exc:
+            raise RowError(f"«Кабинет»: {exc.messages[0]}")
+
+        if room_key(room) == room_key(group.room):
+            room = ""
+
+    _duplicate(state, (group.pk, weekday_id, number, week), line)
 
     pair = Pair.objects.filter(
         groups=group, pair_name=subject, teacher=teacher
@@ -447,10 +490,37 @@ def _row_schedule(line, data, report, state):
             f"(сначала загрузите «Пары»)"
         )
 
+    # В одной ячейке: либо пара «каждую неделю», либо верхняя и/или нижняя
+    others = list(Day.objects.filter(
+        group=group, weekday_id=weekday_id, pair_number=number
+    ).exclude(week=week))
+
+    if any(
+        (week == WEEK_EVERY) != (other.week == WEEK_EVERY) for other in others
+    ):
+        raise RowError(
+            "в этой ячейке уже есть пара другого вида недели: ячейка либо "
+            "«каждая неделя», либо делится на верхнюю и нижнюю"
+        )
+
+    if any(other.pair_id == pair.pk for other in others):
+        raise RowError(
+            "одна и та же пара на верхней и нижней неделе: оставьте "
+            "одну строку с неделей «каждая»"
+        )
+
+    defaults = {"pair_id": pair.pk}
+
+    if room is not None:
+        defaults["room"] = room
+
     status = _upsert(
         Day,
-        {"group": group, "weekday_id": weekday_id, "pair_number": number},
-        {"pair_id": pair.pk},
+        {
+            "group": group, "weekday_id": weekday_id,
+            "pair_number": number, "week": week,
+        },
+        defaults,
         report,
     )
 
@@ -471,14 +541,21 @@ def _after_schedule(report, state):
             )
         )
 
-        if len(days) > 1:
-            names = ", ".join(day.group.group_name for day in days)
+        # Верхняя неделя одной группы и нижняя другой друг другу не мешают
+        names = sorted({
+            day.group.group_name
+            for day in days
+            for other in days
+            if day.group_id != other.group_id
+            and weeks_compatible(day.week, other.week)
+        })
 
+        if names:
             # Только предупреждение: пара может быть общей (лекция)
             report["warnings"].append(
                 f"{days[0].pair.teacher.teacher_name} в день "
                 f"«{WEEKDAY_NAMES[weekday_id]}», пара {number} стоит сразу "
-                f"у нескольких групп: {names}."
+                f"у нескольких групп: {', '.join(names)}."
             )
 
 
@@ -519,7 +596,10 @@ KINDS = {
         "title": "Расписание",
         "headers": [
             "Группа", "День недели", "Номер пары", "Предмет", "Преподаватель",
+            "Неделя", "Кабинет",
         ],
+        # Старые файлы без этих столбцов по-прежнему загружаются
+        "optional": ["Неделя", "Кабинет"],
         "export": _export_schedule,
         "row": _row_schedule,
         "after": _after_schedule,
@@ -583,6 +663,33 @@ def max_bytes(kind):
 # Экспорт
 # ---------------------------------------------------------------------------
 
+# Ячейка, начинающаяся с этих знаков, в Excel и LibreOffice читается как
+# формула («=HYPERLINK(…)» из названия предмета выполнится у того, кто откроет
+# выгрузку). В файл такие значения пишутся с апострофом впереди, при загрузке
+# он снимается: выгрузка → загрузка возвращает те же данные.
+FORMULA_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value):
+    """Значение для ячейки файла: строки-«формулы» получают апостроф."""
+    if isinstance(value, str) and value.startswith(FORMULA_CHARS):
+        return "'" + value
+
+    return value
+
+
+def csv_unsafe(value):
+    """Обратное к csv_safe: снимает апостроф, поставленный выгрузкой."""
+    if (
+        isinstance(value, str)
+        and value.startswith("'")
+        and value[1:].startswith(FORMULA_CHARS)
+    ):
+        return value[1:]
+
+    return value
+
+
 def build_csv(kind, template=False):
     """Содержимое файла (байты, UTF-8 с BOM). template — только заголовки."""
     spec = KINDS[kind]
@@ -593,7 +700,8 @@ def build_csv(kind, template=False):
     writer.writerow(spec["headers"])
 
     if not template:
-        writer.writerows(spec["export"]())
+        for row in spec["export"]():
+            writer.writerow([csv_safe(cell) for cell in row])
 
     return (BOM + buffer.getvalue()).encode("utf-8")
 
@@ -625,7 +733,7 @@ def _decode(raw):
     )
 
 
-def _read_rows(text, headers, max_rows=MAX_ROWS):
+def _read_rows(text, headers, max_rows=MAX_ROWS, optional=()):
     """[(номер строки, {столбец: значение})]. Ошибки формата — ValueError."""
     lines = [line for line in text.splitlines() if line.strip()]
 
@@ -655,7 +763,10 @@ def _read_rows(text, headers, max_rows=MAX_ROWS):
                 found = [_clean(cell).casefold() for cell in row]
                 expected = [header.casefold() for header in headers]
 
-                missing = [h for h in headers if h.casefold() not in found]
+                missing = [
+                    h for h in headers
+                    if h not in optional and h.casefold() not in found
+                ]
                 extra = [c for c in found if c not in expected]
 
                 if missing or extra or len(set(found)) != len(found):
@@ -672,7 +783,13 @@ def _read_rows(text, headers, max_rows=MAX_ROWS):
 
                     raise ValueError(
                         "заголовок файла не подходит (" + "; ".join(problems)
-                        + "). Нужны: " + ", ".join(headers)
+                        + "). Нужны: " + ", ".join(
+                            h for h in headers if h not in optional
+                        )
+                        + (
+                            ". Можно добавить: " + ", ".join(optional)
+                            if optional else ""
+                        )
                     )
 
                 continue
@@ -683,12 +800,16 @@ def _read_rows(text, headers, max_rows=MAX_ROWS):
                     f"чем столбцов"
                 )
 
+            row = [csv_unsafe(cell) for cell in row]
             row = row + [""] * (len(found) - len(row))
             by_name = dict(zip(found, row))
 
             rows.append((
                 reader.line_num,
-                {header: by_name[header.casefold()] for header in headers},
+                {
+                    header: by_name.get(header.casefold())
+                    for header in headers
+                },
             ))
 
             if len(rows) > max_rows:
@@ -777,7 +898,8 @@ def import_csv(kind, raw, dry_run=False, replace=False, confirmed=False):
 
     try:
         rows = _read_rows(
-            _decode(raw), spec["headers"], spec.get("max_rows", MAX_ROWS)
+            _decode(raw), spec["headers"], spec.get("max_rows", MAX_ROWS),
+            spec.get("optional", ()),
         )
     except ValueError as exc:
         report["fatal"] = str(exc)

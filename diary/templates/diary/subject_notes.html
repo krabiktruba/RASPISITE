@@ -1,0 +1,34 @@
+{# Описания предметов под таблицей дневника; преподаватель пары и администратор могут их менять #}
+{% if subject_notes %}
+    <section class="users-card person-card subject-notes" aria-labelledby="subject-notes-title">
+        <h2 id="subject-notes-title">Описание предметов</h2>
+
+        {% for note in subject_notes %}
+            <article class="subject-note">
+                <h3 class="subject-note-title">{{ note.subject }}</h3>
+
+                {% if note.description %}
+                    <p class="subject-note-text">{{ note.description|linebreaksbr }}</p>
+                {% else %}
+                    <p class="subject-note-empty">Описания пока нет.</p>
+                {% endif %}
+
+                {% if note.can_edit %}
+                    <details class="subject-note-edit">
+                        <summary>{% if note.description %}Изменить описание{% else %}Добавить описание{% endif %}</summary>
+                        <form method="post" action="{% url 'pair_description' pair_id=note.pair_id %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                            <textarea name="description" rows="4" maxlength="500"
+                                      aria-label="Описание предмета {{ note.subject }}">{{ note.description }}</textarea>
+                            <div class="subject-note-actions">
+                                <span class="subject-note-limit">до 500 знаков</span>
+                                <button type="submit" class="subject-note-save">Сохранить</button>
+                            </div>
+                        </form>
+                    </details>
+                {% endif %}
+            </article>
+        {% endfor %}
+    </section>
+{% endif %}

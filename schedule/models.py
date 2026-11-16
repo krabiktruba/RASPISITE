@@ -2,6 +2,7 @@ from django.conf import settings
 from django.core.validators import RegexValidator
 from django.db import models
 
+from .limits import DESCRIPTION_MAX, ROOM_MAX
 from .tags import TAG_COLOR_DEFAULT, color_class
 
 
@@ -125,6 +126,8 @@ class Group(models.Model):
         db_column="shift"
     )
     group_name = models.CharField(max_length=100)
+    # Обычный кабинет группы; у отдельной пары может быть особый (Day.room)
+    room = models.CharField(max_length=ROOM_MAX, blank=True, default="")
 
     class Meta:
         db_table = "Group"
@@ -152,6 +155,12 @@ class Pair(models.Model):
         db_column="teacher"
     )
     pair_name = models.CharField(max_length=150)
+    description = models.CharField(
+        "Описание предмета",
+        max_length=DESCRIPTION_MAX,
+        blank=True,
+        default="",
+    )
     groups = models.ManyToManyField(
         Group,
         through="PairGroup",
@@ -211,6 +220,8 @@ class Semester(models.Model):
     )
     start_date = models.DateField(db_column="start_date")
     end_date = models.DateField(db_column="end_date")
+    # Первая неделя семестра по умолчанию верхняя; галочка меняет местами
+    swap_weeks = models.BooleanField(default=False, db_column="swap_weeks")
 
     class Meta:
         db_table = "Semester"
@@ -258,15 +269,59 @@ class Day(models.Model):
         on_delete=models.PROTECT,
         db_column="weekday"
     )
+    # Особый кабинет этой пары; пусто — кабинет группы
+    room = models.CharField(max_length=ROOM_MAX, blank=True, default="")
+    # 0 — каждую неделю, 1 — верхняя, 2 — нижняя (см. schedule/weeks.py)
+    week = models.SmallIntegerField(default=0)
 
     class Meta:
         db_table = "Day"
         constraints = [
             models.UniqueConstraint(
-                fields=["group", "weekday", "pair_number"],
-                name="unique_group_weekday_pair"
-            )
+                fields=["group", "weekday", "pair_number", "week"],
+                name="unique_group_weekday_pair_week"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(week__gte=0) & models.Q(week__lte=2),
+                name="day_week_range",
+            ),
         ]
+
+
+class Duty(models.Model):
+    """Дежурный преподаватель: день недели и смена, без чётности недель.
+
+    На один день и смену можно назначить несколько преподавателей.
+    """
+
+    duty_id = models.AutoField(primary_key=True)
+    shift = models.ForeignKey(
+        Shift,
+        on_delete=models.CASCADE,
+        db_column="shift"
+    )
+    weekday = models.SmallIntegerField()
+    teacher = models.ForeignKey(
+        Teacher,
+        on_delete=models.CASCADE,
+        db_column="teacher_id"
+    )
+
+    class Meta:
+        db_table = "Duty"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shift", "weekday", "teacher"],
+                name="unique_duty_shift_weekday_teacher"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(weekday__gte=1, weekday__lte=6),
+                name="duty_weekday_range"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.weekday} · {self.shift_id} смена · {self.teacher}"
 
 
 class Calendar(models.Model):

@@ -234,26 +234,7 @@ body {
     color: #3655d9;
 }
 
-/* Кнопка «Назад»: в самом правом краю шапки, после «Выйти» */
-.main-nav {
-    margin-left: auto;
-}
-
-.nav-back {
-    flex-shrink: 0;
-    border: 1px solid #d1d5db;
-    background: #ffffff;
-}
-
-.nav-back:hover {
-    border-color: #c7d2fe;
-}
-
-/* Меню-бургер и почта в меню: видны только на узких экранах */
-.nav-toggle,
-.nav-user {
-    display: none;
-}
+/* Меню «⋮», панель, подпись раздела и кнопка «Назад»: см. «Раунд 26» в конце файла */
 
 
 /* Область содержимого страниц */
@@ -936,12 +917,6 @@ body {
         max-height: 180px;
     }
 }
-
-/* Не трогать */
-#workshop-page .daily-header {
-    margin-top: 0px
-}
-
 
 /* ------------------------------------------------------------------ */
 /* Авторизация                                                         */
@@ -3220,106 +3195,7 @@ a.hero-choice-link:focus-visible {
 }
 
 
-/* ---------- Раунд 14: шапка на разных экранах ---------- */
-
-/* Пункты меню перестают помещаться в одну строку: меню прячется за кнопку */
-@media (max-width: 1340px) {
-    .header-inner {
-        flex-wrap: wrap;
-        min-height: 64px;
-        padding: 0 20px;
-        gap: 0 12px;
-    }
-
-    .brand {
-        padding: 14px 0;
-        font-size: 22px;
-    }
-
-    .nav-back {
-        order: 1;
-        margin-left: auto;
-        padding: 9px 14px;
-    }
-
-    .nav-toggle {
-        order: 2;
-        display: none;
-        align-items: center;
-        padding: 9px 14px;
-        border: 1px solid #d1d5db;
-        border-radius: 9px;
-        background: #ffffff;
-        font: 600 15px Arial, sans-serif;
-        color: #374151;
-        cursor: pointer;
-    }
-
-    .js .nav-toggle {
-        display: inline-flex;
-    }
-
-    .main-nav {
-        order: 3;
-        flex: 1 0 100%;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-left: 0;
-        padding: 4px 0 12px;
-    }
-
-    /* С JavaScript меню закрыто, пока его не откроют кнопкой «Меню» */
-    .js .nav-toggle ~ .main-nav {
-        display: none;
-    }
-
-    .js .nav-toggle ~ .main-nav.is-open {
-        display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        gap: 2px;
-    }
-
-    .main-nav.is-open .nav-link {
-        justify-content: flex-start;
-        padding: 13px 14px;
-        font-size: 16px;
-    }
-
-    .main-nav.is-open .nav-user {
-        display: block;
-        margin: 0;
-        padding: 6px 14px 0;
-        font-size: 13px;
-        color: #6b7280;
-        order: 99;
-    }
-
-    .main-nav.is-open .nav-logout {
-        order: 100;
-        margin-top: 4px;
-        padding-top: 6px;
-        border-top: 1px solid #e5e7eb;
-    }
-
-    .main-nav.is-open .nav-logout .nav-link {
-        width: 100%;
-    }
-}
-
-@media (max-width: 700px) {
-    .header-inner {
-        padding: 0 16px;
-    }
-
-    .brand {
-        font-size: 20px;
-    }
-
-    .nav-back {
-        padding: 8px 12px;
-    }
-}
+/* ---------- Раунд 14: шапка на разных экранах (с раунда 26 см. в конце файла) ---------- */
 
 
 /* ---------- Раунд 15: профили плитками ---------- */
@@ -4193,4 +4069,1202 @@ a.hero-choice-link:focus-visible {
 
 .journal-general-hint {
     margin: 12px 0 0;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 26: меню «⋮», подпись раздела и кнопка «Назад»                */
+/* ------------------------------------------------------------------ */
+
+.header-inner {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 0 14px;
+}
+
+/* Гость: одна ссылка «Вход» у правого края */
+.guest-nav {
+    display: flex;
+    margin-left: auto;
+}
+
+/* Подпись раздела: цветная точка и название; граница видна при закрытом меню */
+.zone-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+
+    padding: 6px 12px;
+    border-radius: 999px;
+
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    white-space: nowrap;
+
+    color: var(--zone-color, #5b6178);
+    background: var(--zone-soft, rgba(91, 97, 120, 0.1));
+}
+
+.zone-chip::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.zone-schedule {
+    --zone-color: #2563a8;
+    --zone-soft: rgba(37, 99, 168, 0.1);
+}
+
+.zone-diary {
+    --zone-color: #178a60;
+    --zone-soft: rgba(23, 138, 96, 0.11);
+}
+
+.zone-common {
+    --zone-color: #5b6178;
+    --zone-soft: rgba(91, 97, 120, 0.12);
+}
+
+.zone-admin {
+    --zone-color: #a5621a;
+    --zone-soft: rgba(165, 98, 26, 0.12);
+}
+
+/* Кнопка «⋮»: видна только с JavaScript, без него меню лежит под шапкой */
+.nav-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+
+    width: 42px;
+    height: 42px;
+    margin-left: auto;
+    padding: 0;
+
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #374151;
+    cursor: pointer;
+
+    transition:
+        background-color 0.2s ease,
+        color 0.2s ease;
+}
+
+.js .nav-toggle {
+    display: inline-flex;
+}
+
+.nav-toggle:hover,
+.nav-toggle[aria-expanded="true"] {
+    background: #eef2ff;
+    color: #3655d9;
+}
+
+/* Панель меню: акцентный фон RASPISITE. Без JavaScript это блок под шапкой */
+.main-nav {
+    order: 3;
+    flex: 1 0 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+
+    margin: 0 0 12px;
+    padding: 14px;
+    border-radius: 14px;
+
+    background: #3655d9;
+    color: #ffffff;
+}
+
+/* С JavaScript панель закрыта, пока её не откроют, и выезжает справа */
+.js .nav-toggle ~ .main-nav {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 130;
+
+    order: 0;
+    flex: none;
+    width: min(360px, 100%);
+    margin: 0;
+    padding: 14px 14px 24px;
+    border-radius: 0;
+
+    overflow-y: auto;
+    overscroll-behavior: contain;
+
+    transform: translateX(100%);
+    visibility: hidden;
+    box-shadow: -14px 0 34px rgba(15, 23, 42, 0.24);
+    transition:
+        transform 0.24s ease,
+        visibility 0s linear 0.24s;
+}
+
+.js .nav-toggle ~ .main-nav.is-open {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.24s ease;
+}
+
+/* Затемнение за панелью */
+.nav-scrim {
+    display: none;
+}
+
+.js .nav-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+
+    background: rgba(15, 23, 42, 0.4);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.24s ease;
+}
+
+.js .nav-scrim.is-open {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+html.nav-open {
+    overflow: hidden;
+}
+
+/* Верх панели: почта и крестик */
+.nav-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 36px;
+    margin-bottom: 10px;
+}
+
+.main-nav .nav-user {
+    display: block;
+    min-width: 0;
+    margin: 0;
+
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.nav-close {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+
+    width: 36px;
+    height: 36px;
+    padding: 0;
+
+    border: 0;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.14);
+    color: #ffffff;
+    cursor: pointer;
+}
+
+.js .nav-close {
+    display: inline-flex;
+}
+
+.nav-close:hover {
+    background: rgba(255, 255, 255, 0.26);
+}
+
+/* «Моё расписание»: самая заметная кнопка, всегда первая */
+.nav-home {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    min-height: 62px;
+    margin: 0 0 6px;
+    padding: 14px 16px;
+    border-radius: 14px;
+
+    background: #ffffff;
+    color: #3655d9;
+    font-size: 20px;
+    font-weight: 800;
+    text-align: center;
+
+    box-shadow: 0 8px 18px rgba(10, 20, 80, 0.26);
+    transition: background-color 0.2s ease;
+}
+
+.nav-home:hover {
+    background: #eef2ff;
+}
+
+/* Названия разделов в панели; цвет точки совпадает с подписью в шапке */
+.nav-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    margin: 16px 0 4px;
+    padding: 0 14px;
+
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.74);
+}
+
+.nav-section::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dot, #ffffff);
+}
+
+.nav-section-schedule {
+    --dot: #9cc4f5;
+}
+
+.nav-section-diary {
+    --dot: #7fe0b8;
+}
+
+.nav-section-common {
+    --dot: #d4d8e8;
+}
+
+.nav-section-admin {
+    --dot: #f2c48a;
+}
+
+.main-nav .nav-link {
+    justify-content: flex-start;
+    padding: 12px 14px;
+    font-size: 16px;
+    color: #ffffff;
+}
+
+.main-nav .nav-link:hover {
+    background: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+}
+
+.main-nav .nav-link.is-current {
+    background: rgba(255, 255, 255, 0.24);
+}
+
+.main-nav .nav-logout {
+    margin-top: 18px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.34);
+}
+
+.main-nav .nav-logout .nav-link {
+    width: 100%;
+    text-align: left;
+}
+
+/* «Назад»: тонкая планка со стрелкой влево на всю её длину.
+   Стоит в разметке под main, а на экране прилипает к правому краю сверху. */
+.back-strip {
+    position: fixed;
+    top: 80px;
+    right: 14px;
+    z-index: 90;
+
+    display: block;
+    width: 104px;
+    height: 18px;
+    padding: 2px 4px;
+    border-radius: 6px;
+
+    background: rgba(255, 255, 255, 0.88);
+    color: #111111;
+    opacity: 0.72;
+    transition: opacity 0.2s ease;
+}
+
+.back-strip svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.back-strip:hover,
+.back-strip:focus-visible {
+    opacity: 1;
+}
+
+@media (max-width: 700px) {
+    .header-inner {
+        min-height: 64px;
+        padding: 0 16px;
+    }
+
+    .brand {
+        font-size: 20px;
+    }
+
+    .back-strip {
+        top: 68px;
+        right: 8px;
+        width: 84px;
+    }
+}
+
+@media (max-width: 600px) {
+    .js .nav-toggle ~ .main-nav {
+        width: 100%;
+        box-shadow: none;
+    }
+}
+
+@media print {
+    .back-strip,
+    .nav-toggle,
+    .nav-scrim,
+    .main-nav {
+        display: none !important;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .js .nav-toggle ~ .main-nav,
+    .js .nav-scrim {
+        transition: none;
+    }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 27: переключатель «Расписание | Дневник»                      */
+/* ------------------------------------------------------------------ */
+
+.mode-switch {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 3px;
+
+    background: #ffffff;
+    border: 1px solid #d6dae6;
+    border-radius: 999px;
+}
+
+.mode-switch-item {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 16px;
+
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #4b5563;
+    text-decoration: none;
+
+    transition:
+        background-color 0.2s ease,
+        color 0.2s ease;
+}
+
+a.mode-switch-item:hover {
+    background: #eef2ff;
+    color: #3655d9;
+    text-decoration: none;
+}
+
+.mode-switch-item.is-active {
+    background: #3655d9;
+    color: #ffffff;
+    cursor: default;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 28: сообщения после сохранения (прокрутка восстановлена)      */
+/* ------------------------------------------------------------------ */
+
+/* scroll.js вернул страницу на прежнее место: сообщение сверху не видно,
+   поэтому оно всплывает внизу экрана */
+.messages.is-floating {
+    position: fixed;
+    left: 50%;
+    bottom: 20px;
+    z-index: 140;
+
+    width: min(560px, calc(100% - 32px));
+    margin: 0;
+
+    transform: translateX(-50%);
+    cursor: pointer;
+}
+
+.messages.is-floating .message {
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.2);
+}
+
+.messages.is-gone {
+    display: none;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 29: описание предмета                                         */
+/* ------------------------------------------------------------------ */
+
+/* Предмет с описанием: подсказка при наведении, пунктир как намёк на неё */
+.has-description {
+    cursor: help;
+    text-decoration: underline dotted #9ca3af;
+    text-underline-offset: 3px;
+}
+
+.subject-notes {
+    margin-top: 16px;
+}
+
+.subject-note {
+    padding: 12px 0;
+    border-top: 1px solid #e5e7eb;
+}
+
+.subject-note:first-of-type {
+    border-top: 0;
+    padding-top: 0;
+}
+
+.subject-note-title {
+    margin: 0 0 4px;
+    font-size: 15px;
+}
+
+.subject-note-text {
+    margin: 0;
+    color: #374151;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.subject-note-empty {
+    margin: 0;
+    color: #6b7280;
+    font-size: 14px;
+}
+
+.subject-note-edit {
+    margin-top: 8px;
+}
+
+.subject-note-edit summary {
+    color: #3655d9;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.subject-note-edit textarea {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 14px;
+    resize: vertical;
+}
+
+.subject-note-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.subject-note-limit {
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.subject-note-save {
+    padding: 7px 16px;
+    border: 1px solid #3655d9;
+    border-radius: 8px;
+    background: #3655d9;
+    color: #ffffff;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.subject-note-save:hover {
+    background: #2946c7;
+}
+
+.student-lesson-desc {
+    display: block;
+    margin-top: 2px;
+    color: #4b5563;
+    font-size: 13px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+#workshop-page textarea[name="description"] {
+    box-sizing: border-box;
+    width: 100%;
+    font: inherit;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 30: правка пользователя в строке                              */
+/* ------------------------------------------------------------------ */
+
+.users-table tr[id^="user-"] {
+    scroll-margin-top: 80px;
+}
+
+.user-edit-link {
+    display: block;
+    margin-top: 2px;
+    font-size: 13px;
+    font-weight: 400;
+}
+
+.user-off-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: #fee2e2;
+    color: #991b1b;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.users-table tr.is-off th,
+.users-table tr.is-off td {
+    color: #6b7280;
+}
+
+.users-table tr.user-edit-row td {
+    background: #f8fafc;
+    box-shadow: inset 4px 0 0 #3655d9;
+}
+
+.user-edit-form {
+    padding: 4px 0;
+}
+
+.user-edit-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.user-edit-field label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.user-edit-field input {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 14px;
+}
+
+.user-edit-form .errorlist {
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+    color: #b91c1c;
+    font-size: 13px;
+}
+
+.user-edit-active {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: 10px;
+    font-size: 14px;
+}
+
+.user-edit-actions {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-top: 10px;
+}
+
+.user-edit-form .users-hint {
+    margin: 8px 0 0;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 31: регистрация                                               */
+/* ------------------------------------------------------------------ */
+
+.auth-field select {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    font: inherit;
+}
+
+.auth-field select:focus {
+    outline: 2px solid #c7d2fe;
+    border-color: #3655d9;
+}
+
+.auth-field input.auth-code {
+    font-size: 22px;
+    letter-spacing: 0.3em;
+    text-align: center;
+}
+
+.auth-notice {
+    margin: 0 0 16px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #eef2ff;
+    color: #1e3a8a;
+    font-size: 14px;
+}
+
+.auth-secondary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    margin-top: 16px;
+}
+
+.auth-secondary form {
+    margin: 0;
+}
+
+.auth-text-button {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #3655d9;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.auth-text-button:hover {
+    text-decoration: underline;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 32: восстановление пароля                                     */
+/* ------------------------------------------------------------------ */
+
+a.auth-button-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    text-decoration: none;
+}
+
+a.auth-button-link:hover {
+    color: #ffffff;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 33: кабинеты                                                  */
+/* ------------------------------------------------------------------ */
+
+.pair-room {
+    display: inline-block;
+    margin: 2px 0 0 6px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: #eef2ff;
+    color: #3730a3;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.edit-room {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    margin: 0 0 16px;
+}
+
+.edit-room label {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.edit-room input,
+.edit-room-slot input {
+    box-sizing: border-box;
+    min-height: 34px;
+    padding: 0 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 14px;
+}
+
+.edit-room input {
+    width: 140px;
+}
+
+.edit-room-slot {
+    grid-column: 3 / -1;
+    margin-top: 4px;
+}
+
+.edit-room-slot input {
+    width: 100%;
+    min-height: 30px;
+    font-size: 13px;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 34: дежурные преподаватели                                    */
+/* ------------------------------------------------------------------ */
+
+.duty-line {
+    margin: 0 0 14px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: #fef9c3;
+    color: #713f12;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.calendar-duty {
+    margin-top: 20px;
+}
+
+.calendar-duty h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+}
+
+.duty-table-wrap {
+    overflow-x: auto;
+}
+
+.duty-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.duty-table th,
+.duty-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+    vertical-align: top;
+}
+
+.duty-table thead th {
+    background: #f8fafc;
+    font-size: 13px;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 35: верхняя и нижняя недели                                   */
+/* ------------------------------------------------------------------ */
+
+/* Ячейка с двумя парами: номер и время слева, две половинки справа */
+.pair.pair-split {
+    align-items: stretch;
+    grid-template-columns: 40px 125px minmax(0, 1fr);
+}
+
+.groups-grid .pair.pair-split {
+    grid-template-columns: 32px 105px minmax(0, 1fr);
+}
+
+.pair-split .pair-number,
+.pair-split .pair-time {
+    align-self: center;
+}
+
+.pair-halves {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+}
+
+.pair-half {
+    display: grid;
+    grid-template-columns: 62px minmax(0, 1fr);
+    align-items: center;
+    column-gap: 8px;
+    min-width: 0;
+    padding: 3px 6px;
+    border-radius: 6px;
+}
+
+.pair-half + .pair-half {
+    border-top: 1px dashed #e5e7eb;
+}
+
+.pair-half.is-current-week {
+    background: #eef6ff;
+}
+
+.pair-half .week-tag {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    align-self: center;
+    margin: 0;
+}
+
+.pair-half .pair-name,
+.pair-half .pair-teacher,
+.pair-half .pair-actions {
+    grid-column: 2;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.pair-window {
+    color: #9ca3af;
+    font-weight: 400;
+    font-style: italic;
+}
+
+.week-tag {
+    display: inline-block;
+    margin-bottom: 1px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: #6b7280;
+}
+
+.week-tag.is-current {
+    color: #1d4ed8;
+}
+
+/* Редактор: чекбокс-переключатель и вторая строка (без JavaScript) */
+.edit-cell {
+    position: relative;
+    border-bottom: 1px solid #eeeeee;
+}
+
+.edit-cell:last-child {
+    border-bottom: none;
+}
+
+.edit-cell .pair {
+    border-bottom: none;
+}
+
+.split-toggle {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+}
+
+.edit-room-slot {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.edit-room-slot input {
+    flex: 1;
+    min-width: 0;
+}
+
+.split-button {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 30px;
+    min-height: 30px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #374151;
+    font-size: 15px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.split-button:hover {
+    background: #f3f4f6;
+}
+
+.split-toggle:checked ~ .edit-row .split-button {
+    border-color: #2563eb;
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.split-toggle:focus-visible ~ .edit-row .split-button {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+}
+
+.edit-row-second,
+.edit-select .week-tag {
+    display: none;
+}
+
+.split-toggle:checked ~ .edit-row-second {
+    display: grid;
+}
+
+.split-toggle:checked ~ .edit-row .edit-select .week-tag {
+    display: block;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Раунд 36: справочник                                                 */
+/* ------------------------------------------------------------------ */
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.ref-tabs {
+    display: inline-flex;
+    flex-wrap: wrap;
+    overflow: hidden;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.ref-tab {
+    display: inline-flex;
+    align-items: center;
+    min-height: 38px;
+    padding: 0 14px;
+    border-left: 1px solid #d1d5db;
+    color: #374151;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.ref-tab:first-child {
+    border-left: none;
+}
+
+.ref-tab:hover {
+    background: #f3f4f6;
+}
+
+.ref-tab.is-current {
+    background: #e0e7ff;
+    color: #3730a3;
+}
+
+.ref-card {
+    margin-top: 20px;
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+    overflow: hidden;
+}
+
+.ref-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid #eeeeee;
+}
+
+.ref-search {
+    display: flex;
+    flex: 1 1 260px;
+    max-width: 420px;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ref-search-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7280;
+}
+
+.ref-search input {
+    width: 100%;
+    min-height: 38px;
+    padding: 0 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #ffffff;
+    font: inherit;
+    font-size: 14px;
+}
+
+.ref-count {
+    margin: 0;
+    font-size: 13px;
+    color: #6b7280;
+}
+
+.ref-scroll {
+    overflow-x: auto;
+}
+
+.ref-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.ref-table th,
+.ref-table td {
+    padding: 9px 14px;
+    border-bottom: 1px solid #f0f0f0;
+    text-align: left;
+    vertical-align: top;
+}
+
+.ref-table th {
+    position: sticky;
+    top: 0;
+    background: #f9fafb;
+    color: #4b5563;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+
+.ref-table th:hover {
+    background: #f3f4f6;
+}
+
+.ref-table th:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: -2px;
+}
+
+/* Стрелка порядка сортировки */
+.ref-table th[aria-sort="ascending"] span::after {
+    content: " ▲";
+    font-size: 10px;
+    color: #4338ca;
+}
+
+.ref-table th[aria-sort="descending"] span::after {
+    content: " ▼";
+    font-size: 10px;
+    color: #4338ca;
+}
+
+.ref-table td a {
+    color: #1d4ed8;
+    text-decoration: none;
+}
+
+.ref-table td a:hover {
+    text-decoration: underline;
+}
+
+.ref-table tbody tr:hover {
+    background: #fafbff;
+}
+
+.ref-table tr[hidden] {
+    display: none;
+}
+
+.ref-edit,
+.ref-edit-head {
+    width: 1%;
+    white-space: nowrap;
+    text-align: right;
+}
+
+.ref-edit a {
+    font-size: 13px;
+    color: #6b7280;
+}
+
+.ref-empty {
+    margin: 0;
+    padding: 24px 16px;
+    text-align: center;
+    color: #6b7280;
+}
+
+@media (max-width: 640px) {
+    .ref-tabs {
+        width: 100%;
+    }
+
+    .ref-tab {
+        flex: 1 1 auto;
+        justify-content: center;
+    }
 }

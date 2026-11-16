@@ -1,0 +1,36 @@
+<div class="pair-actions">
+    {% if lesson and lesson.editable %}
+        <a class="square-button{% if edit_form and edit_form.act == 'move' and edit_form.slot == day.iso and edit_form.number == pair.number %} is-active{% endif %}"
+           href="?date={{ selected_date_iso }}&amp;edit=1&amp;act=move&amp;slot={{ day.iso }}&amp;number={{ pair.number }}"
+           title="Перенос: пара уйдёт на другую дату и номер"
+           aria-label="Перенос пары {{ pair.number }}">⇄</a>
+
+        <form method="post"
+              action="{% url 'group_change' group_id=group.group_id %}">
+            {% csrf_token %}
+            <input type="hidden" name="kind" value="cancel">
+            <input type="hidden" name="date" value="{{ day.iso }}">
+            <input type="hidden" name="number" value="{{ pair.number }}">
+            <button class="square-button is-danger" type="submit"
+                    title="Отмена: пары в этот день не будет"
+                    aria-label="Отмена пары {{ pair.number }}">✕</button>
+        </form>
+
+        <a class="square-button{% if edit_form and edit_form.act == 'replace' and edit_form.slot == day.iso and edit_form.number == pair.number %} is-active{% endif %}"
+           href="?date={{ selected_date_iso }}&amp;edit=1&amp;act=replace&amp;slot={{ day.iso }}&amp;number={{ pair.number }}"
+           title="Замена: другой преподаватель или название"
+           aria-label="Замена пары {{ pair.number }}">↻</a>
+
+        <form method="post"
+              action="{% url 'group_change' group_id=group.group_id %}">
+            {% csrf_token %}
+            <input type="hidden" name="kind" value="restore">
+            <input type="hidden" name="date" value="{{ day.iso }}">
+            <input type="hidden" name="number" value="{{ pair.number }}">
+            <button class="square-button is-restore" type="submit"
+                    {% if not lesson.change %}disabled{% endif %}
+                    title="Сброс: вернуть пару как в основном расписании"
+                    aria-label="Сброс пары {{ pair.number }}">↩</button>
+        </form>
+    {% endif %}
+</div>

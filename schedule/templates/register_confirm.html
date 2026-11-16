@@ -1,0 +1,53 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="auth-page">
+    <section class="auth-card">
+        <h1>Код из письма</h1>
+        <p class="auth-lead">
+            Мы отправили шестизначный код на <strong>{{ email }}</strong>.
+            Он действует {{ minutes }} минут. Письмо может прийти не сразу, загляните и в «Спам».
+        </p>
+
+        <form method="post" action="{% url 'register_confirm' %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="verify">
+
+            <div class="auth-field">
+                <label for="code">Код</label>
+                <input id="code" class="auth-code" name="code" type="text"
+                       inputmode="numeric" autocomplete="one-time-code"
+                       maxlength="12" autofocus required placeholder="123456">
+
+                {% if error %}
+                    <p class="auth-error" role="alert">{{ error }}</p>
+                {% endif %}
+            </div>
+
+            <button class="auth-button" type="submit">Подтвердить и войти</button>
+        </form>
+
+        <div class="auth-secondary">
+            {% if can_resend %}
+                <form method="post" action="{% url 'register_confirm' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="resend">
+                    <button class="auth-text-button" type="submit">Отправить код ещё раз</button>
+                </form>
+            {% elif sends_left > 0 %}
+                <span class="auth-help">Новый код можно запросить через {{ wait }} с, затем обновите страницу.</span>
+            {% else %}
+                <span class="auth-help">Лимит писем исчерпан, заполните анкету заново.</span>
+            {% endif %}
+
+            <form method="post" action="{% url 'register_confirm' %}">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="cancel">
+                <button class="auth-text-button" type="submit">Изменить данные</button>
+            </form>
+        </div>
+
+        <p class="auth-switch">Код нужен только один раз, при первой регистрации. Дальше вход по почте и паролю.</p>
+    </section>
+</div>
+{% endblock %}

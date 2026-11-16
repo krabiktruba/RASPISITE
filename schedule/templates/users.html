@@ -145,7 +145,7 @@
                 <p class="users-hint user-filter-info">Найдено: {{ found_count }}.</p>
             {% endif %}
 
-            <div class="workshop-table-wrap">
+            <div class="workshop-table-wrap" data-scroll-x>
                 <table class="users-table">
                     <thead>
                         <tr>
@@ -159,7 +159,7 @@
 
                     <tbody>
                         {% for row in rows %}
-                            <tr{% if row.is_new %} class="is-new"{% endif %}>
+                            <tr id="user-{{ row.user.pk }}" class="{% if row.is_new %}is-new {% endif %}{% if not row.is_active %}is-off{% endif %}">
                                 <th scope="row">
                                     {% if row.is_student %}
                                         <a href="{% url 'student_card' user_id=row.user.pk %}">{% if row.full_name %}{{ row.full_name|person }}{% else %}{{ row.user.get_username }}{% endif %}</a>
@@ -169,6 +169,10 @@
                                         {{ row.full_name|person }}
                                     {% else %}
                                         <span class="users-hint">&nbsp;</span>
+                                    {% endif %}
+                                    {% if not row.is_active %}<span class="user-off-badge">отключён</span>{% endif %}
+                                    {% if not row.edit_form %}
+                                        <a class="user-edit-link" href="?{% if filter_query %}{{ filter_query }}&amp;{% endif %}page={{ page_obj.number }}&amp;edit={{ row.user.pk }}#user-{{ row.user.pk }}">Изменить</a>
                                     {% endif %}
                                 </th>
 
@@ -252,6 +256,49 @@
                                     </form>
                                 </td>
                             </tr>
+
+                            {% if row.edit_form %}
+                                <tr class="user-edit-row">
+                                    <td colspan="5">
+                                        <form class="user-edit-form" method="post" action="{% url 'users' %}#user-{{ row.user.pk }}">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="action" value="edit_user">
+                                            <input type="hidden" name="user_id" value="{{ row.user.pk }}">
+                                            <input type="hidden" name="page" value="{{ page_obj.number }}">
+                                            <input type="hidden" name="qs" value="{{ filter_query }}">
+
+                                            {{ row.edit_form.non_field_errors }}
+
+                                            <div class="user-edit-grid">
+                                                {% for field in row.edit_form %}
+                                                    {% if field.name != "is_active" %}
+                                                        <div class="user-edit-field">
+                                                            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                                            {{ field }}
+                                                            {{ field.errors }}
+                                                        </div>
+                                                    {% endif %}
+                                                {% endfor %}
+                                            </div>
+
+                                            <label class="user-edit-active">
+                                                {{ row.edit_form.is_active }}
+                                                <span>{{ row.edit_form.is_active.label }}</span>
+                                            </label>
+                                            {% if row.edit_form.is_active.field.disabled %}
+                                                <span class="users-hint">нельзя отключить {% if row.user.is_superuser %}суперпользователя{% else %}самого себя{% endif %}</span>
+                                            {% endif %}
+
+                                            <p class="users-hint">Если сменить почту, письмо об этом уйдёт и на старый, и на новый адрес. Пароль остаётся прежним.</p>
+
+                                            <div class="user-edit-actions">
+                                                <button type="submit">Сохранить</button>
+                                                <a href="?{% if filter_query %}{{ filter_query }}&amp;{% endif %}page={{ page_obj.number }}#user-{{ row.user.pk }}">Отмена</a>
+                                            </div>
+                                        </form>
+                                    </td>
+                                </tr>
+                            {% endif %}
                         {% empty %}
                             <tr>
                                 <td colspan="5">

@@ -1,7 +1,13 @@
 from django.contrib.auth import views as auth_views
 from django.urls import path
 
-from . import views
+from . import (
+    description_views,
+    password_reset,
+    reference_views,
+    registration_views,
+    views,
+)
 from .forms import GmailLoginForm
 
 
@@ -29,6 +35,36 @@ urlpatterns = [
             redirect_authenticated_user=True,
         ),
         name="login",
+    ),
+    path(
+        "register/",
+        registration_views.register,
+        name="register",
+    ),
+    path(
+        "register/confirm/",
+        registration_views.register_confirm,
+        name="register_confirm",
+    ),
+    path(
+        "password-reset/",
+        password_reset.ResetRequestView.as_view(),
+        name="password_reset",
+    ),
+    path(
+        "password-reset/sent/",
+        password_reset.ResetDoneView.as_view(),
+        name="password_reset_done",
+    ),
+    path(
+        "password-reset/<uidb64>/<token>/",
+        password_reset.ResetConfirmView.as_view(),
+        name="password_reset_confirm",
+    ),
+    path(
+        "password-reset/complete/",
+        password_reset.ResetCompleteView.as_view(),
+        name="password_reset_complete",
     ),
     path(
         "logout/",
@@ -97,6 +133,11 @@ urlpatterns = [
         name="teachers",
     ),
     path(
+        "reference/",
+        reference_views.reference_page,
+        name="reference",
+    ),
+    path(
         "workshop/export/",
         views.workshop_export,
         name="workshop_export",
@@ -105,6 +146,11 @@ urlpatterns = [
         "workshop/export/all/",
         views.workshop_export_all,
         name="workshop_export_all",
+    ),
+    path(
+        "pair/<int:pair_id>/description/",
+        description_views.pair_description,
+        name="pair_description",
     ),
     path(
         "workshop/overview/",
